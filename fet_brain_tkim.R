@@ -1,9 +1,9 @@
 library(dplyr)
-library(Seurat)
+library(tidyr)
 library(ggplot2)
 library(patchwork)
+library(Seurat)
 library(scCustomize)
-library(tidyr)
 
 #####
 
@@ -16,81 +16,7 @@ DefaultAssay(fb_seurat_v25) <- "RNA"
 
 ######
 
-p1 <- DotPlot_scCustom(fb_seurat, features = c("HBM", "HBA", "HBE1", "ALAS2"), group.by = "cell_type_v4", scale = FALSE)
-DefaultAssay(fb_seurat) <- "SCT"
-p2 <- DotPlot_scCustom(fb_seurat, features = c("HBM", "HBA", "HBE1", "ALAS2"), group.by = "cell_type_v4")
-p1 + p2
-
-avg_exp <- AverageExpression(object = fb_seurat, features = c("HBA", "HBE1"), assay = "RNA", layer = "counts")
-avg_exp
-
-avg_exp2 <- unlist(avg_exp$RNA)
-avg_exp2
-
-as.matrix(avg_exp2)
-
-
-DotPlot_scCustom(fb_seurat, features = c("GFAP", "AQP4", "SOX9", "S100B", "ALDH1L1", "SLC1A2", "SLC1A3"), group.by = "cell_type_v4")
-
-DotPlot_scCustom(fb_seurat, features = c("CRYAB", "NR4A1"), group.by = "cell_type_v4")
-
-DotPlot_scCustom(fb_seurat, features = c("PAX6", "SOX2", "HES1", "CD133", "SLC1A3", "GFAP"), group.by = "cell_type_v4")
-
-DotPlot_scCustom(fb_seurat, features = c("TNC", "PTPRZ1", "FAM107A", "HOPX", "LIFR"), group.by = "cell_type_v4")
-
-# Late OPC
-DotPlot_scCustom(fb_seurat, features = c("SOX10", "ENSMMUG00000056728", "PCDH15", "MMP16", "CA10"), group.by = "cell_type_v4")
-
-# Early OPC (Missing NG2, OLIG1 | NG -> CSPG4)
-DotPlot_scCustom(fb_seurat, features = c("PDGFRA", "CSPG4", "OLIG1", "OLIG2", "PCDH17"), group.by = "cell_type_v4")
-
-# Deep cortical layer neuron markers (Missing CTIP2 | CTIP2 -> BCL11B)
-DotPlot_scCustom(fb_seurat, features = c("TBR1", "BCL11B"), group.by = "cell_type_v4")
-
-# Upper cortical layers
-DotPlot_scCustom(fb_seurat, features = c("SATB2", "FEZF2", "SOX5"), group.by = "cell_type_v4")
-
-# Microglia (Missing P2Y12R, OLFML3, CD206, CD115, CD32 | CD206 -> MRC1, CD115 -> CSF1R, CD32 -> FCGR2A)
-DotPlot_scCustom(fb_seurat, features = c("CD68", "CD14", "CD163", "AIF1", "TMEM119", "P2Y12R", "HEXB", "SALL1",
-                                         "OLFML3", "CD80", "ITGAM", "MRC1", "CSF1R", "FCGR2A"), group.by = "cell_type_v4")
-
-# Endothelial Cells
-DotPlot_scCustom(fb_seurat, features = c("CD34", "PECAM1", "TIE1", "VWF", "FLT1"), group.by = "cell_type_v4")
-
-# CD3+ T cells
-DotPlot_scCustom(fb_seurat, features = c("CD3G", "ITK", "S100A4", "ICOS", "CD4", "CD8A"), group.by = "cell_type_v4")
-
-# Pericytes (Missing EDLN, ANGPTN)
-DotPlot_scCustom(fb_seurat, features = c("CD248", "MYOF", "ABCC9", "EDLN", "KCNJ8", "GJA4", "ANGPTN",
-                                         "RGS5", "PDGFRB"), group.by = "cell_type_v4")
-
-# Ependymal Cells (Missing DCDC2a, FAM183b, CCDC153, AQP1, AQP7, CD133, SOX2 | 
-# DCDC2a -> DCDC2, CCDC153 -> DRC12, CD133 -> PROM1)
-DotPlot_scCustom(fb_seurat, features = c("FOXJ1", "DCDC2", "TPPP3", "FAM183b", "RARRES2", "DRC12", "TMEM212",
-                                         "TM4SF1", "AQP1", "AQP4", "AQP7", "AQP9", "PROM1", "SOX2", "NES"), group.by = "cell_type_v4")
-
-# Choroid plexus cells
-DotPlot_scCustom(fb_seurat, features = c("TTR", "FOLR1", "PRLR", "AQP1", "FOXJ1"), group.by = "cell_type_v4")
-
-# Committed oligodendrocyte
-DotPlot_scCustom(fb_seurat, features = c("BCAS1", "ENPP6"), group.by = "cell_type_v4")
-
-# Early OPC (Missing NG2, Olig1)
-DotPlot_scCustom(fb_seurat, features = c("PDGFRA", "NG2", "OLIG1", "OLIG2", "PCDH17"), group.by = "cell_type_v4")
-
-# Myelinating oligodendrocytes
-DotPlot_scCustom(fb_seurat, features = c("MBP", "OLIG2", "MAL", "MOG", "PLP1", "OPALIN"), group.by = "cell_type_v4")
-
-# Developing chandelier neuron (Missing FRIP1)
-DotPlot_scCustom(fb_seurat, features = c("CHODL", "SCGN", "FRIP1", "CACNG5", "DCX"), group.by = "cell_type_v4")
-
-# CGE-Interneuron (No ADARB2+, PNOC/NPB+ : ADARB2, PNOC, NPB)
-DotPlot_scCustom(fb_seurat, features = c("CCK", "ADARB2", "PNOC", "NPB"), group.by = "cell_type_v4")
-
-
-###
-
-# Astro Markers
+# Astro Markers Dot plot
 new_x <- c("vRG", "oRG", "GPC", "AS2", "AS1", "AS0")
 astro_subset <- subset(fb_seurat, idents = new_x)
 Idents(fb_seurat) <- factor(Idents(fb_seurat), levels = new_x)
@@ -113,7 +39,7 @@ astro_plot +
     legend.text = element_text(size = 12)
   )
 
-# Oligodendrocyte lineage
+# Oligodendrocyte lineage Dot plot
 x_axis = c("OPC0", "OPC1", "OPC2", "COP", "BCAS1+OL", "OL1", "OL2")
 fb_subset <- subset(fb_seurat, idents = x_axis)
 Idents(fb_subset) <- factor(Idents(fb_subset), levels = x_axis)
@@ -138,108 +64,9 @@ olig_plot +
   )
 
 
-FeaturePlot_scCustom(fb_seurat, features = c("GFAP", "AQP4", "SOX9"), reduction = "umap.harmony")
-
-
 ###
 
-excluded <- c("M1-MG", "M2-MG", "aMG", "Astro", "OPC2",
-              "PC", "EC", "OL1", "EP", "BCAS1+OL",
-              "COP", "OL2", "CD3+T", "EB", "OPC1", "OPC0", "Astro1", "Astro2", "B1 NSC")
-filtered <- subset(fb_seurat_v15, subset = !(cell_type_v15 %in% excluded))
-
-xaxis = c("vRG", "oRG", "IPC", "DL-ExN", "UL-ExN", "iCGE-IN", "CGE-P", "MGE-P", "MGE-INP", "iCGE-VIP/CR-IN")
-filtered <- subset(filtered, idents = xaxis)
-Idents(filtered) <- factor(Idents(filtered), levels = xaxis)
-filtered$cell_type_v15 <- factor(
-  x = filtered$cell_type_v15,
-  levels = xaxis
-)
-gradient <- c("blue", "white", "red")
-
-# GLAST = SLC1A3, MPP5 = PALS1
-# CTGF = CCN2
-new_features <- c("NES", "PAX6", "FABP7","PTPRZ1", "SLC1A3", "VIM", "HOPX", "TNC" ,"EOMES", "TBR1", "SATB1",
-                  "SOX5", "SATB2", "CUX1", "CUX2", "POU3F2", 
-                  "RORB",
-                  "GRIN2B",
-                  "DLX1", "GAD1", "GAD2", "DLX5", "SOX6", "PROX1", "NR2F1", 
-                  "NR2F2", 'SP9', 'NRP2', "LHX6", "TAC3", "CALB2", "VIP", "RELN", 'CXCR4', 
-                  'NRP1',  "DLX6", "DLX2", "SLC32A1", "CCK", "SP8", "SST", "NPY", "NOS1",  
-                  "CRH", "NKX2-1", "ACKR3", "HTR3A", 
-                  "SLC17A7", "SLC17A6", "SLC17A8", "NEUROD2", "NEUROD6", "GRIA2",
-                  "FOXP2", "TLE4", "BCL11B", "FEZF2", "POU3F1", 
-                  "NRGN", "UNC5D" , "NPTX2", "NPTX1", "CPLX3", "KCNN2", "LPL", "CRYM", "CCN2", "NTNG1")
-
-p1 <- DotPlot_scCustom(filtered, features = new_features, group.by = "cell_type_v15", 
-                       flip_axes = TRUE, x_lab_rotate = TRUE, remove_axis_titles = FALSE, 
-                       assay = "RNA", colors_use = gradient) + labs(x = "Gene", y = "Cluster")
-p1 +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)
-  )
-
-
-excluded2 <- c("M1-MG", "M2-MG", "aMG", "Astro", "OPC2",
-               "PC", "EC", "OL1", "EP", "BCAS1+OL",
-               "COP", "OL2", "CD3+T", "EB", "OPC1", "OPC0", "Astro1", "Astro2", "B1 NSC")
-filtered2 <- subset(fb_seurat_v15, subset = !(cell_type_v15 %in% excluded2))
-
-xaxis2 = c("vRG", "oRG", "IPC", "DL-ExN", "UL-ExN", "iCGE-IN", "CGE-P", "MGE-P", "MGE-INP", "iCGE-VIP/CR-IN")
-filtered2 <- subset(filtered2, idents = xaxis2)
-Idents(filtered2) <- factor(Idents(filtered2), levels = xaxis2)
-filtered2$cell_type_v15 <- factor(
-  x = filtered2$cell_type_v15,
-  levels = xaxis2
-)
-
-gradient <- c("blue", "white", "red")
-
-# CTGF = CCN2, TRP73 = TP73, TBR2 = EOMES
-new_features2 <- c("NPTX1", "NPTX2", "KCNN2", "CPLX3", "LPL", "PCP4", "CRYM", "NTNG1", "CCN2", 
-                   "ENC1", "COL25A1", "RELN", "CALB2", "TP73", "CXCL12", "EOMES", 
-                   "SP8", "LHX5", "TBR1", "FOXP2", "TLE4", "BCL11B", "FEZF2", "GRIK1", "GRIK3", "VIP", 
-                   "GAD1", "SLC17A7", "SLC17A6", "SLC17A8", "NEUROD2", "NEUROD6", "GRIN2B", "GRIA2")
-
-p21 <- DotPlot_scCustom(filtered2, features = new_features2, group.by = "cell_type_v15", flip_axes = TRUE, x_lab_rotate = TRUE, assay = "RNA", colors_use = gradient) + labs(x = "Gene", y = "Cluster")
-p21 +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)
-  )
-
-
-
-### Find the highest expressed gene (clustered dotplot & DF)
-
-fb_seurat_v6 <- PrepSCTFindMarkers(fb_seurat_v6)
-
-all_markers <- FindAllMarkers(object = fb_seurat_v6) %>%
-  Add_Pct_Diff()
-
-top_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 7, named_vector = FALSE,
-                                   make_unique = TRUE, rank_by = "avg_log2FC")
-
-plots <- Clustered_DotPlot(seurat_object = fb_seurat_v6, features = top_markers, flip = TRUE, x_lab_rotate = 90)
-plots[[1]]
-plots <- Clustered_DotPlot(seurat_object = fb_seurat_v6, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 20)
-
-top_20_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 20, data_frame = TRUE, rank_by = "avg_log2FC")
-write.csv(top_20_markers, file = "top_20_markers.csv")
-
-
-###
-
-# IPC Neural Lineage (Subset)
+# IPC Neural Lineage Dot plot (Subset)
 excluded <- c("M1-MG", "M2-MG", "aMG", "Astro", "OPC2",
               "PC", "EC", "OL1", "EP", "BCAS1+OL",
               "COP", "OL2", "CD3+T", "EB", "OPC1", "OPC0", "Astro1", "Astro2", "B1 NSC")
@@ -254,8 +81,7 @@ filtered$cell_type_v19 <- factor(
 )
 gradient <- c("blue", "white", "red")
 
-# GLAST = SLC1A3, MPP5 = PALS1
-# CTGF = CCN2
+# GLAST = SLC1A3, MPP5 = PALS1, CTGF = CCN2
 new_features <- c( "PROX1", 'SP9', "DLX5", "DLX1", "FABP7", "GAD1", "GAD2", "NES", "PAX6", "PTPRZ1","SOX6", "SLC1A3", 
                    "VIM", "HOPX", "TNC", "CALB2", "TAC3", 'CXCR4', "EOMES", "TBR1", 
                    "SATB1", "SOX5", "POU3F2", "NR2F1", "NR2F2", 'NRP1', "CRYM", "SLC17A7", "SLC17A6", "SLC17A8", 
@@ -282,12 +108,12 @@ p1 +
 p1
 
 
-# IPC Neural Lineage (Entire Seurat Object)
+# IPC Neural Lineage Dot plot (Entire Seurat Object)
 ipc_plot <- DotPlot_scCustom(fb_seurat_v25, features = c("DCX", "NEUROD1", "EOMES", "TBR1", 
                                                          "SOX5", "POU3F2", "NR2F1", 'NRP1', "CRYM", "SLC17A6", 
                                                          "NEUROD2", "TLE4", "SATB2", "UNC5D", "GRIA2", "CUX1", "CUX2",  "RORB", "GRIN2B",
                                                          "SLC17A7", "CAMK2A", "NRGN"
-), 
+                                                         ), 
 group.by = "cell_type_v25", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
 
 ipc_plot_filtered <- ipc_plot + 
@@ -297,50 +123,8 @@ ipc_plot_filtered <- ipc_plot +
 ipc_plot_filtered
 
 
-excluded <- c("M1-MG", "M2-MG", "aMG", "Astro", "OPC2",
-              "PC", "EC", "OL1", "EP", "BCAS1+OL",
-              "COP", "OL2", "CD3+T", "EB", "OPC1", "OPC0", "Astro1", "Astro2", "B1 NSC")
-filtered <- subset(fb_seurat_v16, subset = !(cell_type_v15 %in% excluded))
 
-xaxis2 = c("CGE-P", "iCGE-IN", "iCGE-VIP/CR-IN", "MGE-P", "MGE-INP")
-filtered2 <- subset(filtered, idents = xaxis2)
-Idents(filtered2) <- factor(Idents(filtered2), levels = xaxis2)
-filtered2$cell_type_v15 <- factor(
-  x = filtered2$cell_type_v15,
-  levels = xaxis2
-)
-gradient <- c("blue", "white", "red")
-
-# GLAST = SLC1A3, MPP5 = PALS1
-# CTGF = CCN2
-new_features <- c("NES", "PAX6", "FABP7","PTPRZ1", "SLC1A3", "VIM", "HOPX", "TNC" ,"EOMES", "TBR1", "SATB1",
-                  "SOX5", "SATB2", "CUX1", "CUX2", "POU3F2", 
-                  "RORB",
-                  "GRIN2B",
-                  "DLX1", "GAD1", "GAD2", "DLX5", "SOX6", "PROX1", "NR2F1", 
-                  "NR2F2","SLC17A7", "SLC17A6", "SLC17A8", "NEUROD2", "NEUROD6", "GRIA2", 'SP9',
-                  'NRP2', "LHX6", "TAC3", "CALB2", "VIP", "RELN", 'CXCR4', 
-                  'NRP1',  "DLX6", "DLX2", "SLC32A1", "CCK", "SP8", "SST", "NPY", "NOS1",  
-                  "CRH", "NKX2-1", "ACKR3", "HTR3A", 
-                  "FOXP2", "TLE4", "BCL11B", "FEZF2", "POU3F1", 
-                  "NRGN", "UNC5D" , "NPTX2", "NPTX1", "CPLX3", "KCNN2", "LPL", "CRYM", "CCN2", "NTNG1")
-
-p2 <- DotPlot_scCustom(filtered2, features = new_features, group.by = "cell_type_v15", 
-                       flip_axes = TRUE, x_lab_rotate = TRUE, remove_axis_titles = FALSE, 
-                       assay = "RNA", colors_use = gradient) + labs(x = "Gene", y = "Cluster")
-p2 +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)
-  )
-p2
-
-
-# Oligodendrocyte lineage (Subset)
+# Oligodendrocyte lineage Dot plot (Subset)
 x_axis = c("GPC", "OPC0", "OPC1", "OPC2", "COP", "OL1", "OL2")
 fb_subset <- subset(fb_seurat_v20, idents = x_axis)
 Idents(fb_subset) <- factor(Idents(fb_subset), levels = x_axis)
@@ -365,7 +149,7 @@ olig_plot +
   )
 
 
-# Oligodendrocyte lineage (Entire Seurat Object)
+# Oligodendrocyte lineage Dot plot (Entire Seurat Object)
 oligo_plot <- DotPlot_scCustom(fb_seurat_v25, features = c("SOX10", "PDGFRA", "OLIG2", "PCDH17", "PCDH15", "MMP16",
                                                            "CA10", "ENSMMUG00000056728", "BCAS1", "ENPP6", "MAL", "MOG", "PLP1", "MBP"), 
                                group.by = "cell_type_v25", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
@@ -377,7 +161,7 @@ oligo_plot_filtered <- oligo_plot +
 oligo_plot_filtered
 
 
-# Astrocyte Lineage (Subset)
+# Astrocyte Lineage Dot plot (Subset)
 new_x <- c("GPC", "AS0", "AS1", "AS2")
 astro_subset <- subset(fb_seurat_v20, idents = new_x)
 Idents(fb_seurat_v20) <- factor(Idents(fb_seurat_v20), levels = new_x)
@@ -406,7 +190,7 @@ astro_plot  +
     legend.text = element_text(size = 12)) 
 
 
-# Astrocyte Lineage (Entire Seurat Object)
+# Astrocyte Lineage Dot plot (Entire Seurat Object)
 astro_plot <- DotPlot_scCustom(fb_seurat_v25, features = c("MT2A", "VIM", "S100B", "APOE", "TIMP3",
                                                            "SPARCL1", "SLC1A3", "SLC1A2", "NFIA", "GFAP"), 
                                group.by = "cell_type_v25", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
@@ -416,17 +200,6 @@ astro_plot_filtered <- astro_plot +
   guides(size = guide_legend(title = "Percent expressed", order = 2),
          color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
 astro_plot_filtered
-
-
-# Swap AS2 <-> AS0 on Main Seurat Object v17
-
-table(fb_seurat_v17$cell_type_v16)
-
-fb_seurat_v17$cell_type_v16[fb_seurat_v17$cell_type_v16 == "AS0"] <- "Temp"
-fb_seurat_v17$cell_type_v16[fb_seurat_v17$cell_type_v16 == "AS2"] <- "AS0"
-fb_seurat_v17$cell_type_v16[fb_seurat_v17$cell_type_v16 == "Temp"] <- "AS2"
-
-table(fb_seurat_v17$cell_type_v16)
 
 
 # Miscellaneous Dot Plot (Subset)
@@ -562,34 +335,7 @@ nl_plot  +
   )
 
 
-# Find vRG, oRG Genes
-nl_x <- c("vRG", "oRG")
-# , "CGE-P", "iCGE-IN", "iCGE-VIP/CR-IN", "MGE-P", "MGE-INP"
-nl_sub <- subset(fb_seurat_v20, idents = nl_x)
-Idents(nl_sub) <- factor(Idents(nl_sub), levels = nl_x)
-nl_sub$cell_type_v19 <- factor(
-  x = nl_sub$cell_type_v19,
-  levels = nl_x
-)
-gradient <- c("blue", "white", "red")
-
-nl_plot <- DotPlot_scCustom(nl_sub, features = c("MKI67", "CDK1", "TOP2A", "PCNA", "HES5", "HES1", "NOTCH1",
-                                                 "TUBB3", "PROM1", "SPAG5", "ANLN", "ASPM",
-                                                 "HOPX", "FAM107A", "PTPRZ1", "TNC", "LAMC3", "F3", "HES6", "PAX6"), 
-                            group.by = "cell_type_v19", flip_axes = TRUE, remove_axis_titles = FALSE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
-
-nl_plot  +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)
-  )
-
-
-# Integrate vRG, oRG Genes to CGE & MGE Neural Lineage (Subset)
+# Integrated vRG, oRG Genes to CGE & MGE Neural Lineage Dot plot (Subset)
 nl_x <- c("vRG", "oRG", "CGE0", "CGE1", "CGE2", "MGE0", "MGE1")
 nl_sub <- subset(fb_seurat_v20, idents = nl_x)
 Idents(nl_sub) <- factor(Idents(nl_sub), levels = nl_x)
@@ -617,7 +363,7 @@ nl_plot  +
   )
 
 
-# Integrate vRG, oRG Genes to CGE & MGE Neural Lineage (Entire Seurat Object)
+# Integrated vRG, oRG Genes to CGE & MGE Neural Lineage Dot plot (Entire Seurat Object)
 cge_mge_plot <- DotPlot_scCustom(fb_seurat_v25, features = c("MKI67", "CDK1", "TOP2A", "PCNA", "ASPM", "ANLN", "HOPX", "FAM107A", "TNC","HES5", 
                                                              "NR2F1", "NR2F2", "DLX1", "DLX5", "GAD1", "GAD2", "TUBB3", "SP8", "NRP2", "PROX1", 
                                                              "CALB2","KCNC1", "CHRNA2", "VIP", "NKX2-1", "SOX2", "DLX2", "SOX6", "SP9", "NPY", 
@@ -633,14 +379,14 @@ cge_mge_plot_filtered
 
 ###
 
-### Astro Subcluster & UMAP
+# Astro Subcluster & UMAP
 levels(fb_seurat_v17)
 clustersToSubset <- c("vRG", "oRG", "GPC", "AS0", "AS1", "AS2")
 data.sub <- subset(fb_seurat_v17, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -660,14 +406,14 @@ p2
 # saveRDS(data.sub, file = "astro_sub_v2.RDS")
 
 
-### Neuron Subcluster & UMAP
+# Neuron Subcluster & UMAP
 levels(fb_seurat_v17)
 clustersToSubset <- c("CGE-P", "iCGE-IN", "iCGE-VIP/CR-IN", "MGE-P", "MGE-INP")
 data.sub <- subset(fb_seurat_v17, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -686,14 +432,14 @@ p1+p2
 p2
 
 
-### Oligo Subcluster & UMAP
+# Oligo Subcluster & UMAP
 levels(fb_seurat_v17)
 clustersToSubset <- c("vRG", "oRG", "GPC", "OPC0", "OPC1", "OPC2", "COP", "OL1", "OL2")
 data.sub <- subset(fb_seurat_v17, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -712,14 +458,14 @@ p1+p2
 p2
 
 
-### Microglia Subcluster & UMAP
+# Microglia Subcluster & UMAP
 levels(fb_seurat_v20)
 clustersToSubset <- c("Mono", "MG1", "MG2", "BAM")
 data.sub <- subset(fb_seurat_v20, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -738,14 +484,14 @@ p1+p2
 p2
 
 
-### Misc Subcluster & UMAP
+# Misc Subcluster & UMAP
 levels(fb_seurat_v17)
 clustersToSubset <- c("EC", "PC", "EB", "CD3+T", "EP", "AIF1++ MG", "MG")
 data.sub <- subset(fb_seurat_v17, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -763,40 +509,6 @@ p2 <- DimPlot_scCustom(data.sub, group.by = "cell_type_v16")
 p1+p2
 
 p2
-
-
-###
-
-# Microglia Dot plot using micro_sub_v2 (4 clusters / not named yet)
-micro_x3 <- c("0", "1", "2", "3")
-micro_sub3 <- subset(micro_sub_v3, idents = micro_x3)
-Idents(micro_sub3) <- factor(Idents(micro_sub3), levels = micro_x3)
-micro_sub3$cell_type_v18 <- factor(
-  x = micro_sub3$cell_type_v18,
-  levels = micro_x3
-)
-gradient <- c("blue", "white", "red")
-
-micro_plot3 <- DotPlot_scCustom(micro_sub3, features = c("CD68", "AIF1", "TMEM119", "P2RY12", "HEXB", "SALL1", "OLFML3", "CD80",
-                                                         "CCR2", "CD14", "LYZ", "S100A8", "S100A9",
-                                                         "ELANE", "MPO", "PRTN3", "CTSG", "CEACAM8", "CSF3R", "OLFM4", "LCN2", "DEFA1", "DEFA3",
-                                                         "TIMD4", "MFAP4", "LYVE1", "MRC1", "F13A1", "COLEC12",
-                                                         "GPR34","FCGR3A"
-), 
-group.by = "cell_type_v18", flip_axes = TRUE, remove_axis_titles = FALSE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
-
-micro_plot3  +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  scale_color_gradientn(
-    colors = gradient,
-    breaks = c(-1, 0, 1)
-  ) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)) 
 
 
 # Microglial Sub-Cluster UMAP
@@ -806,7 +518,7 @@ data.sub <- subset(micro_sub_v3, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -825,37 +537,7 @@ p1+p2
 p2
 
 
-# Highest expressed genes
-micro_sub_v3 <- PrepSCTFindMarkers(micro_sub_v3)
-
-all_markers <- FindAllMarkers(object = micro_sub_v3) %>%
-  Add_Pct_Diff()
-
-top_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 7, named_vector = FALSE,
-                                   make_unique = TRUE, rank_by = "avg_log2FC")
-
-plots <- DotPlot_scCustom(seurat_object = micro_sub_v3, features = top_markers, flip = TRUE, x_lab_rotate = 90)
-#plots[[1]]
-#plots <- Clustered_DotPlot(seurat_object = micro_sub_v2, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 20)
-plots  +
-  guides(size = guide_legend(title = "Percent expressed", order = 2),
-         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
-  scale_size_continuous(breaks = c(0, 20, 40, 60),
-                        limits = c(0, 100)) +
-  scale_color_gradientn(
-    colors = gradient,
-    breaks = c(-1, 0, 1)
-  ) +
-  theme(
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12)) 
-
-top_20_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 20, data_frame = TRUE, rank_by = "avg_log2FC")
-top_20_markers[top_20_markers$cluster == "3",]
-# write.csv(top_20_markers, file = "top_20_markers.csv")
-
-
-### CGE and MGE Neural Progenitors UMAP
+# CGE and MGE Neural Progenitors UMAP
 neuron_sub <- readRDS("/mmfs1/gscratch/kawaldorflab/jcorn427/fet_brain/neuron_sub_v6.RDS")
 neuron_sub <- NormalizeData(neuron_sub, assay = "RNA")
 DefaultAssay(neuron_sub) <- "RNA"
@@ -867,7 +549,7 @@ data.sub <- subset(neuron_sub, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -886,7 +568,7 @@ p1+p2
 p2
 
 
-### Testing CGE and MGE Neural Progenitors UMAP using Entire Seurat Object
+# CGE and MGE Neural Progenitors UMAP (Entire Seurat Object)
 
 levels(fb_seurat_v21)
 Idents(fb_seurat_v21) <- "cell_type_v20"
@@ -940,19 +622,8 @@ top_20_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes 
 top_20_markers[top_20_markers$cluster == "iCGE-VIP/CR-IN",]
 # write.csv(top_20_markers, file = "top_20_markers.csv")
 
-# Check for VIP & CALB2 ?
-Idents(data.sub) <- "cell_type_v18"
-FeaturePlot(data.sub, features = "VIP", cells = WhichCells(data.sub, idents = "iCGE-VIP/CR-IN"))
-FeaturePlot(data.sub, features = "CALB2", cells = WhichCells(data.sub, idents = "iCGE-VIP/CR-IN"))
 
-expr <- FetchData(data.sub, vars = c("VIP", "CALB2"))
-table(data.sub$cell_type_v18 == "iCGE-VIP/CR-IN", expr$VIP > 0)
-table(data.sub$cell_type_v18 == "iCGE-VIP/CR-IN", expr$CALB2 > 0)
-
-FeaturePlot(data.sub, features = c("VIP", "CALB2"), order = TRUE, combine = FALSE)
-
-
-### Oligodendrocyte + Astrocyte Lineage
+# Oligodendrocyte + Astrocyte Lineage
 levels(oligo_astro)
 # "GPC", "OPC0", "OPC1", "OPC2", "COP", "OL1", "OL2", "AS0", "AS1", "AS2"
 clustersToSubset <- c()
@@ -960,7 +631,7 @@ data.sub <- subset(oligo_astro, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -983,7 +654,7 @@ oligo_astro <- NormalizeData(oligo_astro, assay = "RNA")
 DefaultAssay(oligo_astro) <- "RNA"
 
 
-### Split Oligo and Astro into 2 UMAPS with GPC in both
+# Split Oligo and Astro into 2 UMAPS with GPC in both
 levels(oligo_astro)
 # "GPC", "OPC0", "OPC1", "OPC2", "COP", "OL1", "OL2", "AS0", "AS1", "AS2"
 Idents(oligo_astro) <- "cell_type_v18"
@@ -992,7 +663,7 @@ data.sub <- subset(oligo_astro, idents = clustersToSubset)
 
 DimPlot_scCustom(data.sub, reduction = "umap.harmony")
 
-#Run sctransform
+# Run sctransform
 data.sub <- SCTransform(object=data.sub, vst.flavor="v2",  conserve.memory=T, return.only.var.genes=F)
 
 # Run PCA and UMAP
@@ -1009,8 +680,6 @@ p2 <- DimPlot_scCustom(data.sub, group.by = "cell_type_v18")
 p1+p2
 
 p2
-
-table(fb_seurat_v20$cell_type_v19)
 
 
 ###
@@ -1379,7 +1048,6 @@ ggplot() +
   )
 
 
-
 ### Astro B
 # Plot genes of interest
 Idents(astro_sub) <- "cell_type_updated"
@@ -1649,5 +1317,3 @@ ggplot() +
     legend.title = element_text(size = 14), 
     legend.text = element_text(size = 12)
   )
-
-
