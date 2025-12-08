@@ -1,0 +1,2822 @@
+```{r}
+setwd("/mmfs1/gscratch/kawaldorflab/jcorn427/fet_brain/fb_03")
+reticulate::use_condaenv("seuratextend", required = TRUE)
+
+library(Seurat)
+library(SoupX)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(harmony)
+library(scCustomize)
+library(scDEED)
+library(future)
+library(plotly)
+library(monocle3)
+library(SeuratWrappers)
+library(RColorBrewer)
+library(patchwork)
+library(scales)
+library(reticulate)
+
+
+set.seed(42)
+# needs to be set for large dataset analysis
+options(future.globals.maxSize = 1e10)
+# n_cores <- parallelly::availableCores(constraints = "cluster")
+# plan(multisession, workers = n_cores)
+# plan(sequential)
+
+fb_merged <- readRDS("fb_merged.RDS")
+```
+```{r}
+# Define paths to data
+
+data_dirs <- list(
+  Ctrl13 = '/gscratch/kawaldorflab/megana/CTRL13/outs',
+  Ctrl24 = '/gscratch/kawaldorflab/megana/CTRL24/outs',
+  Ctrl25 = '/gscratch/kawaldorflab/megana/CTRL25/outs',
+  Ctrl26 = '/gscratch/kawaldorflab/megana/CTRL26/outs',
+  Ctrl27 = '/gscratch/kawaldorflab/megana/CTRL27/outs',
+  Sal7 = '/gscratch/kawaldorflab/megana/SAL7/outs',
+  Sal9 = '/gscratch/kawaldorflab/megana/SAL9/outs',
+  Sal10 = '/gscratch/kawaldorflab/megana/SAL10/outs',
+  Sal13 = '/gscratch/kawaldorflab/megana/SAL13/outs'
+)
+```
+```{r}
+# --- Process each sample individually ---
+seurat_object_list <- list()
+
+for (sample_name in names(data_dirs)) {
+  cat("Processing sample:", sample_name, "\n")
+  
+  sample_path <- data_dirs[[sample_name]]
+  
+  # Load raw and filtered data
+  raw_counts <- Seurat::Read10X_h5(file.path(sample_path, "raw_feature_bc_matrix.h5"))
+  filtered_counts <- Seurat::Read10X_h5(file.path(sample_path, "filtered_feature_bc_matrix.h5"))
+  
+  # Create preliminary Seurat object for clustering (as before)
+  fb_temp <- CreateSeuratObject(counts = filtered_counts)
+  fb_temp <- NormalizeData(fb_temp)
+  fb_temp <- FindVariableFeatures(fb_temp)
+  fb_temp <- ScaleData(fb_temp)
+  fb_temp <- RunPCA(fb_temp)
+  fb_temp <- FindNeighbors(fb_temp, dims = 1:10)
+  fb_temp <- FindClusters(fb_temp, resolution = 0.5)
+  prelim_clusters <- fb_temp$seurat_clusters
+  
+  # --- SoupX correction for the current sample ---
+  sc <- SoupChannel(raw_counts, filtered_counts)
+  sc <- setClusters(sc, prelim_clusters)
+  sc <- autoEstCont(sc)
+  corrected_counts <- adjustCounts(sc, roundToInt = TRUE)
+  
+  # --- Create Seurat object from corrected data ---
+  fb <- CreateSeuratObject(counts = corrected_counts, project = sample_name)
+  fb$sample <- sample_name # Add sample information to metadata
+  
+  # --- QC for the current sample ---
+  fb[["percent.mt"]] <- PercentageFeatureSet(fb, pattern = "^MT-")
+  fb <- subset(fb, subset = nFeature_RNA > 200 & percent.mt < 5)
+  
+  # Add to the list
+  seurat_object_list[[sample_name]] <- fb
+}
+```
+
+```{r}
+# --- Merge the Seurat objects ---
+# Merge all objects into a single object
+fb_merged <- merge(x = seurat_object_list[[1]], 
+                     y = seurat_object_list[2:length(seurat_object_list)], 
+                     add.cell.ids = names(data_dirs), 
+                     project = "all_samples")
+```
+```{r}
+# --- SCTransform normalization ---
+fb_merged <- SCTransform(fb_merged, vars.to.regress = "percent.mt")
+
+
+# --- Perform PCA on the merged object ---
+# It's recommended to run PCA before Harmony
+fb_merged <- RunPCA(fb_merged, assay = "SCT", npcs = 50)
+
+ElbowPlot(fb_merged, ndims = 50, reduction = "pca")
+# --- Visualize PCA results before Harmony (optional) ---
+# This plot will likely show clustering by batch/sample
+DimPlot(fb_merged, reduction = "pca", group.by = "sample")
+
+# --- Run Harmony for batch correction ---
+fb_merged <- RunHarmony(
+  object = fb_merged, 
+  group.by.vars = "sample", 
+  assay.use = "SCT", 
+  reduction.use = "pca",
+  reduction.save = "harmony"
+)
+
+# --- Visualize Harmony results ---
+# This UMAP will use the batch-corrected Harmony embeddings
+fb_merged <- RunUMAP(fb_merged, reduction = "harmony", dims = 1:30)
+DimPlot(fb_merged, reduction = "umap", group.by = "sample")
+```
+```{r}
+# --- Clustering with Harmony embeddings ---
+fb_merged <- FindNeighbors(fb_merged, reduction = "harmony", dims = 1:30)
+fb_merged <- FindClusters(fb_merged, resolution = 0.5)
+
+# --- Final UMAP visualization ---
+DimPlot_scCustom(fb_merged, reduction = "umap", label = TRUE)
+ggsave("init_umap.pdf", width = 10, height = 8, units = "in")
+
+# --- Find marker genes ---
+# The marker finding step does not require a reduction
+fb_merged.markers <- FindAllMarkers(fb_merged, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+```
+
+```{r}
+#saveRDS(fb_merged, file = "fb_merged_pre_scDEED.RDS")
+fb_merged <- readRDS("fb_merged_pre_scDEED.RDS")
+```
+
+
+```{r scDEED part 1}
+# # Running scDEED to look at our default clustering to look for dubious embedding
+# result_orig <- scDEED(fb_merged, K = 40, reduction.method = "umap", default_assay = 'SCT', slot = 'scale.data', rerun = F)
+# saveRDS(result_orig, file = 'scDEED_result_orig.RDS')
+# # result_orig <- readRDS('scDEED_result_orig.RDS')
+# 
+# # Pre-scDEED analysis
+# min(result_orig$num_dubious$number_dubious_cells)
+# opt = which(result_orig$num_dubious$number_dubious_cells==min(result_orig$num_dubious$number_dubious_cells))
+# m = result_orig$num_dubious$min.dist[opt]
+# n = result_orig$num_dubious$n_neighbors[opt]
+# 
+# dubious_cells = result_orig$full_results$dubious_cells[opt]
+# dubious_cells = as.numeric(strsplit(dubious_cells, ',')[[1]])
+# trustworthy_cells =  result_orig$full_results$trustworthy_cells[opt]
+# trustworthy_cells = as.numeric(strsplit(trustworthy_cells, ',')[[1]])
+# data_orig = RunUMAP(fb_merged, dims = 1:40, min.dist = m, n.neighbors = n, seed.use = 100)
+# 
+# DimPlot(fb_merged, reduction = 'umap', cells.highlight = list('dubious' = dubious_cells, 'trustworthy' = trustworthy_cells), shuffle = TRUE) + scale_color_manual(values = c('gray', 'blue', 'red'))
+
+```
+
+
+```{r scDEED part 2}
+# # Running scDEED on my data to reduce dubious embedding
+# result <- scDEED(fb_merged, K = 40, reduction.method = "umap", default_assay = 'SCT', slot = 'scale.data')
+# 
+# saveRDS(result, file = 'scDEED_result.RDS')
+# # result <- readRDS('scDEED_result.RDS')
+# 
+# # Post-scDEED analysis
+# min(result$num_dubious$number_dubious_cells)
+# opt = which(result$num_dubious$number_dubious_cells==min(result$num_dubious$number_dubious_cells))
+# m = result$num_dubious$min.dist[opt]
+# n = result$num_dubious$n_neighbors[opt]
+# 
+# dubious_cells = result$full_results$dubious_cells[opt]
+# dubious_cells = as.numeric(strsplit(dubious_cells, ',')[[1]])
+# trustworthy_cells =  result$full_results$trustworthy_cells[opt]
+# trustworthy_cells = as.numeric(strsplit(trustworthy_cells, ',')[[1]])
+# data_opt = RunUMAP(fb_merged, dims = 1:40, min.dist = m, n.neighbors = n, seed.use = 100)
+# 
+# DimPlot(data_opt, reduction = 'umap', cells.highlight = list('dubious' = dubious_cells, 'trustworthy' = trustworthy_cells), shuffle = TRUE) + scale_color_manual(values = c('gray', 'blue', 'red'))
+# 
+# # Using the new seurat object going forward, will re-run standard pipeline from RunUMAP
+# fb_merged <- data_opt
+# 
+# fb_merged <- FindNeighbors(fb_merged, dims = 1:40)
+# fb_merged <- FindClusters(fb_merged, resolution = 0.5)
+# 
+# # Take a look, use different meta data combinations for split and group to get a better picture
+# DimPlot_scCustom(fb_merged, reduction = "umap", label = TRUE)
+# 
+# saveRDS(fb_merged, file = "fb_merged_scDEED.RDS")
+# # fb_merged <- readRDS("fb_merged_scDEED.RDS")
+
+```
+
+```{r}
+FeaturePlot(fb_merged, features = "nFeature_RNA")
+FeaturePlot(fb_merged, features = "nCount_RNA", max.cutoff = "q50")
+```
+```{r Top Markers Code, fig.width=20, fig.height=10}
+fb_merged <- PrepSCTFindMarkers(fb_merged)
+
+all_markers <- FindAllMarkers(object = fb_merged) %>%
+  Add_Pct_Diff() 
+saveRDS(all_markers, "all_markers.RDS")
+
+# all_markers2 <- all_markers[!grepl("^ENSMMUG", rownames(all_markers)), ]
+
+not_all_markers <- all_markers[grepl(paste(c("ExN1"), collapse = "|"), all_markers$cluster), ]
+
+# not_all_markers <- all_markers2[all_markers2$cluster %in% c(1, 3), ]
+
+top_markers <- Extract_Top_Markers(marker_dataframe = not_all_markers, num_genes = 20, named_vector = FALSE,
+                                   make_unique = TRUE, rank_by = "avg_log2FC")
+# DotPlot_scCustom(fb_merged, top_markers, x_lab_rotate = TRUE, flip_axes = TRUE)
+
+gradient <- c("blue", "white", "red")
+
+plots <- Clustered_DotPlot(seurat_object = fb_merged, features = top_markers, flip = TRUE, x_lab_rotate = 90)
+plots[[1]]
+
+Clustered_DotPlot(seurat_object = fb_merged, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 6, plot_km_elbow = FALSE, colors_use_exp = gradient)
+plots <- Clustered_DotPlot(seurat_object = fb_merged, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 18, plot_km_elbow = FALSE)
+
+
+
+
+top_100_markers <- Extract_Top_Markers(marker_dataframe = not_all_markers, num_genes = 100, data_frame = TRUE,
+                                      rank_by = "avg_log2FC")
+write.csv(top_100_markers, file = "ExN1_markers.csv")
+```
+
+```{r 3D UMAP}
+# 3D UMAP
+fb_3D <- fb_merged
+fb_3D <- RunUMAP(fb_3D, reduction = "harmony", dims = 1:20, n.components = 3L, reduction.name = "umap.harmony_3D")
+
+head(Embeddings(object = fb_3D, reduction = "umap.harmony_3D"))
+
+plot.data <- FetchData(object = fb_3D, vars = c("umapharmony3D_1", "umapharmony3D_2", "umapharmony3D_3", "cell_type_v3"))
+
+plot.data$label <- paste(rownames(plot.data))
+
+fig <- plot_ly(data = plot.data, 
+               x = ~umapharmony3D_1, y = ~umapharmony3D_2, z = ~umapharmony3D_3, 
+               color = ~cell_type_v3, 
+               colors = c("lightseagreen",
+                          "gray50",
+                          "darkgreen",
+                          "black",
+                          "red",
+                          "turquoise4",
+                          "red4",
+                          "yellow4",
+                          "royalblue1",
+                          "lightcyan3",
+                          "peachpuff3",
+                          "khaki3",
+                          "gray20",
+                          "orange2",
+                          "royalblue4",
+                          "yellow3",
+                          "gray80",
+                          "darkorchid1",
+                          "lawngreen",
+                          "plum2",
+                          "darkmagenta"),
+               type = "scatter3d", 
+               mode = "markers", 
+               marker = list(size = 5, width=2), # controls size of points
+               text=~cell_type_v3, #This is that extra column we made earlier for which we will use for cell ID
+               hoverinfo="text") #When you visualize your plotly object, hovering your mouse pointer over a point shows cell names
+fig
+head(plot.data)
+```
+```{r}
+fig <- plot_ly(data = plot.data, 
+               x = ~umapharmony3D_1, y = ~umapharmony3D_2, z = ~umapharmony3D_3, 
+               color = ~cell_type_v3, 
+               colors = c("lightseagreen",
+                          "gray50",
+                          "darkgreen",
+                          "black",
+                          "red",
+                          "turquoise4",
+                          "red4",
+                          "yellow4",
+                          "royalblue1",
+                          "lightcyan3",
+                          "peachpuff3",
+                          "khaki3",
+                          "gray20",
+                          "orange2",
+                          "royalblue4",
+                          "yellow3",
+                          "gray80",
+                          "darkorchid1",
+                          "lawngreen",
+                          "plum2",
+                          "darkmagenta"),
+               type = "scatter3d", 
+               mode = "markers", 
+               marker = list(size = 5, width=2),
+               text=~cell_type_v3,
+               hoverinfo="text") %>%
+  layout(
+    legend = list(
+      orientation = "h",  # Set legend orientation to horizontal
+      x = 0, y = -0.1    # Adjust position (e.g., below the plot area)
+      # entrywidth = 100, # You can play with this to force wrapping based on width
+      # entrywidthmode = "pixels"
+      # If 'orientation="h"' makes one long horizontal list, adjusting the plot width 
+      # or using the 'annotations' workaround might be necessary.
+    )
+  )
+
+fig
+```
+
+
+```{r}
+FeaturePlot_scCustom(fb_merged, features = "MKI67")
+
+DotPlot_scCustom(fb_merged, features = c('MKI67', 'PCNA', 'TOP2A', 'ASPM', 'CENPF'), flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient)
+```
+```{r}
+DotPlot_scCustom(fb_merged, features = c('SHH', 'ISL1', 'MEIS2', 'NPAS1', 'NPAS3', "GAD1", "GAD2", 
+                                         'KIT', 'SSTR2', 'UNC5B', 'NEUROD6', 'ELMO1', 'EPHA4', 'EFNB3', 'SEMA6A',
+                                         'KCNK9', 'TASK3', 'KCNC1', 'SCN1A', 'GABRA1', 'SLC32A1', 'VGAT', 'SLC6A1', 'GAT1',
+                                         'PVALB', 'SST', 'NPY', 'CHODL', 'CRYM'), flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient)
+
+```
+
+```{r}
+sct_counts <- GetAssayData(object = fb_merged, assay = "SCT", layer = "counts")
+sct_counts <- t(sct_counts)
+sct_counts_df <- as.data.frame(as.matrix(sct_counts))
+write.csv(sct_counts_df, gzfile("sct_counts.csv.gz"), row.names = TRUE)
+```
+```{r}
+allen_brain <- read.csv('allen_brain.csv', header = TRUE)
+
+# Get metadata from main object
+meta.data <- fb_merged@meta.data
+meta.data <- rownames_to_column(meta.data, var = "cell_id")
+meta_data_2 <- left_join(x = meta.data, y = allen_brain, by = "cell_id")
+
+meta_data_2<- meta_data_2 %>% select(cell_id, supercluster_name)
+
+fb_merged <- AddMetaData(fb_merged, meta_data_2)
+
+p1 <- DimPlot_scCustom(fb_merged)
+
+p2 <- DimPlot_scCustom(fb_merged, group.by = "supercluster_name", label = TRUE, repel = TRUE)
+plot <- p1+p2
+ggsave('allen_brain.pdf', plot = p2, width = 15, height = 8, units = "in")
+
+```
+```{r}
+#### Seurat to Monocle3 ####
+
+cds <- as.cell_data_set(fb_merged)
+
+plot_cells(cds, color_cells_by="seurat_clusters", show_trajectory_graph=FALSE, reduction_method = "UMAP")
+plot_cells()
+
+# Now run the rest of the Monocle3 workflow
+cds <- cluster_cells(cds, reduction_method = "UMAP")
+cds <- learn_graph(cds, use_partition = TRUE)
+cds <- order_cells(cds)
+
+# Plot the trajectory and pseudotime on the Harmony UMAP
+plot_cells(cds,
+           #color_cells_by = "pseudotime",
+           label_cell_groups = TRUE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE)
+
+plot_cells(cds,
+           color_cells_by = "seurat_clusters",
+           label_principal_points = TRUE)
+
+
+
+cds <- order_cells(cds, root_pr_nodes = c("Y_254", "Y_31", "Y_212", "Y_74"))
+
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           show_trajectory_graph = TRUE,
+           label_cell_groups = FALSE, # Set to TRUE to label cell groups
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size = 1.5)
+```
+
+```{r}
+FeaturePlot_scCustom(fb_merged, features = "SATB2")
+```
+
+```{r}
+levels(fb_merged)
+
+initial_clust <- c("OPC",  "MG1",  "2",  "COP1",  "OL",  "5" , "6" , "MG2" , "8",  "9" , "10", "11", "12", "vRG", "14", "COP2" ,"16" ,"vRG" ,"18", "19", "MG0", "21", "FIB", "BAM", "24")
+
+names(initial_clust) <- levels(fb_merged)
+fb_merged <- RenameIdents(fb_merged, initial_clust)
+DimPlot_scCustom(fb_merged, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+fb_merged$cell_type_v11 <- Idents(fb_merged)
+
+saveRDS(fb_merged, file = "fb_merged_v12.RDS")
+
+```
+```{r}
+fb_merged2 <- FindSubCluster(object = fb_merged, cluster = "12",graph.name = "SCT_snn", resolution = 0.1, subcluster.name = "sub")
+
+DimPlot_scCustom(fb_merged2, reduction = "umap", group.by = "sub", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+```
+```{r, fig.width= 20, fig.height= 8}
+FeaturePlot(fb_merged2, features = c("SATB2", "SLC17A7"), blend = TRUE)
+```
+```{r}
+levels(fb_merged2)
+Idents(fb_merged2) <- "sub"
+
+initial_clust <- c("ExN" ,"OPC"  ,"2",    "COP1", "OL",   "21" ,  "5"  ,  "16"   ,"8"  ,  "19" ,  "10" ,  "9"  ,  "MG1"  ,"vRG"  ,"6",    "11" ,  "14" ,  "COP2", "18" ,  "IPC" ,"12_2", "MG2",  "MG0" , "BAM" , "24" ,  "FIB")
+
+names(initial_clust) <- levels(fb_merged2)
+fb_merged2 <- RenameIdents(fb_merged2, initial_clust)
+DimPlot_scCustom(fb_merged2, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+fb_merged$cell_type_v11 <- Idents(fb_merged)
+
+saveRDS(fb_merged, file = "fb_merged_v12.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged2, features = c('NKX2-1', 'LHX6', 'LAMP5', 'SOX6'), num_columns = 2)
+```
+```{r}
+fb_merged3 <- FindSubCluster(object = fb_merged2, cluster = "2",graph.name = "SCT_snn", resolution = 0.2, subcluster.name = "sub2")
+
+DimPlot_scCustom(fb_merged3, reduction = "umap", group.by = "sub2", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+```
+```{r}
+genes_of_interest <- c("NKX2-1", "LHX6")
+cluster_to_subset <- "2" 
+subset_object <- subset(fb_merged2, idents = cluster_to_subset)
+
+subset_object <- NormalizeData(subset_object)
+VariableFeatures(object = subset_object) <- genes_of_interest
+subset_object <- ScaleData(subset_object, features = genes_of_interest)
+subset_object <- RunPCA(subset_object, features = genes_of_interest)
+expression_data <- FetchData(subset_object, vars = c("NKX2-1", "LHX6"))
+
+FeaturePlot_scCustom(subset_object, features = c("NKX2-1", "LHX6"))
+
+nkx21_threshold <- 0.3
+lhx6_threshold <- 0.3
+
+
+subset_object$expression_status <- "Below_Threshold" # Default label
+
+cells_above_threshold_bool <- expression_data$"NKX2-1" > nkx21_threshold | expression_data$"LHX6" > lhx6_threshold
+
+subset_object$expression_status[cells_above_threshold_bool] <- "Above_Threshold"
+
+# Set the new identities as the active identity
+Idents(subset_object) <- subset_object$expression_status
+
+# Visualize the result
+DimPlot(subset_object, reduction = "umap", label = FALSE, shuffle = TRUE)
+
+
+```
+```{r}
+levels(subset_object)
+initial_clust <- c("CGE", "MGE")
+
+names(initial_clust) <- levels(subset_object)
+subset_object <- RenameIdents(subset_object, initial_clust)
+DimPlot_scCustom(subset_object, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE, shuffle = TRUE)
+
+subset_object$cge_mge <- Idents(subset_object)
+
+```
+```{r}
+cluster_to_subset <- "CGE" 
+subset_object2 <- subset(subset_object, idents = cluster_to_subset)
+FeaturePlot_scCustom(subset_object2, features = c('NR2F2', 'PROX1', 'FEZF2', 'GAD1', 'DLX1', 'DLX2'), num_columns = 3)
+```
+```{r}
+# Add labels back into main UMAP
+CellsMetaTrim <- subset(subset_object@meta.data, select = c("cge_mge"))
+fb_merged3 <- AddMetaData(fb_merged2, CellsMetaTrim)
+
+meta.data <- fb_merged3@meta.data
+
+meta.data <- meta.data %>% mutate(cell_type_v1 = coalesce(cge_mge, sub))
+clusters <- subset(meta.data, select = c("cell_type_v1"))
+fb_merged3 <- AddMetaData(fb_merged3, clusters)
+
+fb_merged3$sub <- NULL
+fb_merged3$cge_mge <- NULL
+
+head(fb_merged3@meta.data)
+levels(fb_merged3)
+Idents(fb_merged3) <- "cell_type_v1"
+
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE, shuffle = TRUE)
+
+saveRDS(fb_seurat_2, file = "fb_seurat_v8.RDS")
+```
+```{r}
+levels(fb_merged3)
+
+
+initial_clust <- c("ExN", "OPC" , "CGE" , "COP1", "OL" ,  "21" ,  "5"  ,  "16" ,  "8" ,   "19" ,  "10" ,  "9"  ,  "MG1" , "vRG",  "6" ,   "11" ,  "14",   "COP2", "18",   "IPC", "12_2", "MG2" , "MG0",  "BAM",  "24",   "MGE" , "FIB")
+
+names(initial_clust) <- levels(fb_merged3)
+fb_merged3 <- RenameIdents(fb_merged3, initial_clust)
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+fb_merged3$cell_type_v2 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v2.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c("VIP", "CR", "RELN", "CCK", "TAC3", 'SST', 'PVALB', 'NPY', 'NOS1', 'CRYM', 'CHODL'), num_columns = 4)
+```
+```{r}
+cluster_to_subset <- "12_2" 
+subset_object2 <- subset(fb_merged3, idents = cluster_to_subset)
+FeaturePlot_scCustom(subset_object2, features = c("VIP", "CR", "RELN", "CCK", "TAC3", 'SST', 'PVALB', 'NPY', 'NOS1', 'CRYM', 'CHODL'), num_columns = 4)
+```
+
+
+
+```{r}
+levels(fb_merged3)
+
+
+initial_clust <- c("ExN", "OPC" , "CGE0" , "COP1", "OL" ,  "21" ,  "5"  ,  "16" ,  "8" ,   "19" ,  "10" ,  "9"  ,  "MG1" , "vRG",  "6" ,   "11" ,  "14",   "COP2", "18",   "IPC", "CGE1", "MG2" , "MG0",  "BAM",  "24",   "MGE" , "FIB")
+
+names(initial_clust) <- levels(fb_merged3)
+fb_merged3 <- RenameIdents(fb_merged3, initial_clust)
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('TTR', 'KRT18', 'KRT8', 'AQP1', 'CLDN1', 'CLDN3', 'EPCAM', 'CDH1', 'GJA1'), num_columns = 3)
+```
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = fb_merged3, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+fb_merged3 <- SetIdent(fb_merged3, cells = cells.located, value = 'selected_cells')
+
+# Verify the selection with a new plot
+DimPlot(fb_merged3, reduction = "umap", group.by = 'ident')
+
+fb_merged3$lasso <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, 'fb_merged_v3.RDS')
+
+```
+```{r}
+levels(fb_merged3)
+fb_merged3 <- RenameIdents(fb_merged3, c("selected_cells" = "ChP", "6" = "Ep"))
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+saveRDS(fb_merged3, 'fb_merged_v3.RDS')
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('MOBP', 'MBP', 'MAL', 'MOG', 'OPALIN'), num_columns = 3)
+```
+```{r}
+fb_merged3 <- FindSubCluster(object = fb_merged3, cluster = "COP2",graph.name = "SCT_snn", resolution = 0.1, subcluster.name = "sub")
+
+DimPlot_scCustom(fb_merged3, reduction = "umap", group.by = "sub", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+```
+```{r}
+levels(fb_merged3)
+Idents(fb_merged3) <- "sub"
+fb_merged3 <- RenameIdents(fb_merged3, c("COP2_0" = "OL2", "COP2_1" = "COP2", "OL" = "OL1"))
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+saveRDS(fb_merged3, 'fb_merged_v3.RDS')
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('CD3D', 'MS4A1', 'CD19', 'IGHM', 'CD79A', 'IGHD'), num_columns = 3)
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, c("COP2_0" = "OL2", "COP2_1" = "COP2", "OL" = "OL1"))
+```
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = fb_merged3, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+fb_merged3 <- SetIdent(fb_merged3, cells = cells.located, value = 'B')
+
+# Verify the selection with a new plot
+DimPlot(fb_merged3, reduction = "umap", group.by = 'ident')
+
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, 'fb_merged_v3.RDS')
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('GFAP', 'S100B', 'ALDH1L1', 'NFIA'), num_columns = 3)
+FeaturePlot_scCustom(fb_merged3, features = c('VIM', 'FABP7', 'PAX6', 'SOX9'), num_columns = 3)
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "goRG" = "oRG-G")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = 'AQP4')
+```
+```{r, fig.width= 20}
+all_markers <- FindAllMarkers(object = fb_merged3) %>%
+  Add_Pct_Diff() 
+
+# all_markers2 <- all_markers[!grepl("^ENSMMUG", rownames(all_markers)), ]
+
+not_all_markers <- all_markers[grepl(paste(c("5", "14", "19"), collapse = "|"), all_markers$cluster), ]
+
+# not_all_markers <- all_markers2[all_markers2$cluster %in% c(1, 3), ]
+
+top_markers <- Extract_Top_Markers(marker_dataframe = not_all_markers, num_genes = 20, named_vector = FALSE,
+                                   make_unique = TRUE, rank_by = "avg_log2FC")
+# DotPlot_scCustom(fb_merged, top_markers, x_lab_rotate = TRUE, flip_axes = TRUE)
+
+gradient <- c("blue", "white", "red")
+
+plots <- Clustered_DotPlot(seurat_object = fb_merged3, features = top_markers, flip = TRUE, x_lab_rotate = 90)
+plots[[1]]
+
+Clustered_DotPlot(seurat_object = fb_merged3, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 3, plot_km_elbow = FALSE, colors_use_exp = gradient)
+plots <- Clustered_DotPlot(seurat_object = fb_merged, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 18, plot_km_elbow = FALSE)
+
+
+
+
+top_100_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 100, data_frame = TRUE,
+                                      rank_by = "avg_log2FC")
+write.csv(all_markers, file = "all_markers.csv")
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "24" = "MG1")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "16" = "PC")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('PAX6', 'SOX2', 'VIM', 'FABP7', "BLBP", "HES1", "HES5", "GLI3", "NES"), num_columns = 3)
+FeaturePlot_scCustom(fb_merged3, features = c('SLC1A2', 'EAAT2', 'SLC1A3', 'AQP4'), num_columns = 3)
+FeaturePlot_scCustom(fb_merged3, features = c('GJA1', 'SPARCL1', 'THBS1', 'THBS2', 'APOE', 'CLU'), num_columns = 3)
+
+```
+
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = "GFAP")
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "11" = "AS2")
+fb_merged3 <- RenameIdents(fb_merged3, c("19" = "AS1", "14" = "AS1", "5" = "AS1"))
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('SLC17A6', 'VGLUT2', 'GBX2', 'LHX9', 'FOXP2', 'RORA', 'TCF7L2', 'NR4A2', 'CAMK2A', 'GRIA2', 'CACNA1G', 'GAD1', 'GAD2', 'SATB2', 'SLC17A7'), num_columns = 5)
+
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('SLC17A7', 'VGLUT1', 'CAMK2A', 'GRIN1', 'NEUROD2', 'CHD5', 'PRDM8'), num_columns = 3)
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "8" = "EC")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "10" = "UP/I")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('SYN1', 'SYN2', 'SYP', 'SNAP25', 'VAMP2', 'DNM1', 'CPLX1', 'STX1A', 'RAB3A'), num_columns = 3)
+
+```
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "ExN" = "ExN0")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged3, features = c('ASCL1', 'GSX2', 'DLL1', 'DLL3', 'EGFR'), num_columns = 3)
+FeaturePlot_scCustom(fb_merged3, features = c('FOXP2', 'FOXP4', 'SEZ6', 'RGS7', 'ARC'), num_columns = 3)
+FeaturePlot_scCustom(fb_merged3, features = c('RORB', 'ETV1', 'SYT12', 'NEUROD4'), num_columns = 2)
+FeaturePlot_scCustom(fb_merged3, features = c('MEIS2', 'FOXP1', 'FOXP2', 'EBF1', "ISL1"), num_columns =3)
+FeaturePlot_scCustom(fb_merged3, features = c('NR2F2', 'PROX1', 'HTR3A', 'RELN', 'VIP', 'SCGN'), num_columns =3)
+
+FeaturePlot_scCustom(fb_merged3, features = c('NKX2-1', 'LHX6', 'SOX6'), num_columns =2)
+
+```
+```{r}
+
+```
+
+```{r}
+fb_merged3 <- RenameIdents(fb_merged3, "9" = "LGE")
+DimPlot_scCustom(fb_merged3, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged3$cell_type_v3 <- Idents(fb_merged3)
+
+saveRDS(fb_merged3, file = "fb_merged_v3.RDS")
+```
+
+
+
+
+```{r}
+FeaturePlot_scCustom(fb_merged, features = c('CD68', 'CD163', 'CCR2', 'S100A8', 'S100A9', 'LYZ', "FCN1", "CD14", "FCGR3A", "MPO", "CXCR1", "SPI1"), num_columns =  4)
+```
+```{r}
+DotPlot_scCustom(fb_merged, c('CD68', 'CD163', 'CCR2', 'S100A8', 'S100A9', 'LYZ', "FCN1", "CD14", "FCGR3A", "MPO", "CXCR1", "SPI1"), x_lab_rotate = TRUE, flip_axes = TRUE)
+```
+```{r}
+fb_merged <- RenameIdents(fb_merged, "B" = "Mono")
+DimPlot_scCustom(fb_merged, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged$cell_type_v3 <- Idents(fb_merged)
+
+saveRDS(fb_merged, file = "fb_merged_v3.RDS")
+```
+```{r}
+fb_merged2 <- FindSubCluster(object = fb_merged, cluster = "LGE",graph.name = "SCT_snn", resolution = 0.2, subcluster.name = "sub")
+
+DimPlot_scCustom(fb_merged2, reduction = "umap", group.by = "sub", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = FALSE)
+```
+```{r}
+Idents(fb_merged2) <- "sub"
+all_markers <- FindAllMarkers(object = fb_merged2) %>%
+  Add_Pct_Diff() 
+
+# all_markers2 <- all_markers[!grepl("^ENSMMUG", rownames(all_markers)), ]
+
+not_all_markers <- all_markers[grepl(paste(c("COP1", "COP2", "OL1", "OL2"), collapse = "|"), all_markers$cluster), ]
+
+# not_all_markers <- all_markers2[all_markers2$cluster %in% c(1, 3), ]
+
+top_markers <- Extract_Top_Markers(marker_dataframe = not_all_markers, num_genes = 20, named_vector = FALSE,
+                                   make_unique = TRUE, rank_by = "avg_log2FC")
+# DotPlot_scCustom(fb_merged, top_markers, x_lab_rotate = TRUE, flip_axes = TRUE)
+
+gradient <- c("blue", "white", "red")
+
+plots <- Clustered_DotPlot(seurat_object = fb_merged2, features = top_markers, flip = TRUE, x_lab_rotate = 90)
+plots[[1]]
+clusters <- c("OL1", "OL2", "COP1", "COP2")
+plots <- Clustered_DotPlot(seurat_object = fb_merged, features = top_markers, flip = TRUE, x_lab_rotate = 90, k = 18, plot_km_elbow = FALSE)
+
+subset_obj <- subset(fb_merged2, idents = clusters)
+subset_obj@active.ident <- factor(subset_obj@active.ident, levels = clusters)
+
+Clustered_DotPlot(
+  seurat_object = subset_obj, 
+  features = top_markers, 
+  flip = TRUE, 
+  x_lab_rotate = 90, 
+  k = 2, 
+  plot_km_elbow = FALSE, 
+  colors_use_exp = gradient # Include your gradient here if it works
+  # Do NOT use the 'idents' parameter here, as the object is already subsetted
+)
+
+top_100_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 100, data_frame = TRUE,
+                                      rank_by = "avg_log2FC")
+write.csv(all_markers, file = "all_markers.csv")
+```
+```{r}
+plot <- DotPlot_scCustom(fb_merged2, features = top_markers, group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = FALSE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+plot_filtered <- plot + 
+  scale_y_discrete(limits = c("OL1", "OL2", "COP1", "COP2")) # Insert clusters to display here
+plot_filtered
+```
+
+```{r}
+#### Seurat to Monocle3 ####
+
+cds <- as.cell_data_set(fb_merged)
+
+plot_cells(cds, color_cells_by="seurat_clusters", show_trajectory_graph=FALSE, reduction_method = "UMAP")
+
+# Now run the rest of the Monocle3 workflow
+cds <- cluster_cells(cds, reduction_method = "UMAP")
+cds <- learn_graph(cds, use_partition = TRUE)
+cds <- order_cells(cds)
+
+# Plot the trajectory and pseudotime on the Harmony UMAP
+plot_cells(cds,
+           color_cells_by = "cell_type_v3",
+           label_cell_groups = TRUE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE)
+
+ggsave("fig_1c.pdf", width = 12, height = 8, units = "in")
+
+
+
+plot_cells(cds,
+           color_cells_by = "cell_type_v3",
+           label_principal_points = TRUE)
+
+
+
+cds <- order_cells(cds, root_pr_nodes = c("Y_254", "Y_31", "Y_212", "Y_74"))
+
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           show_trajectory_graph = TRUE,
+           label_cell_groups = FALSE, # Set to TRUE to label cell groups
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size = 1.5)
+
+ggsave("fig_1b.pdf", width = 12, height = 8, units = "in")
+
+```
+
+```{r}
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+genes_to_plot <- c("PDGFRA", "PCDH15", "BCAS1", "MAL")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = fb_merged, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+# Define a single color gradient for the expression legend
+expression_gradient_colors <- c("yellow", "orange", "red") 
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("PDGFRA" = "green",
+                                "PCDH15" = "blue",
+                                "BCAS1" = "orange",
+                                "MAL" = "red")) +
+                                
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5) 
+  ) + 
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "BCAS1, MAL, PCDH15, PDGFRA with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+```{r}
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+genes_to_plot <- c("EOMES", "SATB2", "GAD1")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = fb_merged, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("EOMES" = "green",
+                                "SATB2" = "blue",
+                                "GAD1" = "orange")) +
+                                
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5) 
+  ) + 
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "EOMES, GAD1, SATB2 with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+```{r}
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+genes_to_plot <- c("TBR1", "PROX1", "LHX6")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = fb_merged, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("TBR1" = "green",
+                                "PROX1" = "blue",
+                                "LHX6" = "orange")) +
+                                
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5) 
+  ) + 
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "LHX6, PROX1, TBR1 with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+```{r}
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+genes_to_plot <- c("EBF1", "SP8")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = fb_merged, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("EBF1" = "blue",
+                                "SP8" = "orange")) +
+                                
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5) 
+  ) + 
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "EBF1, SP8 with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+```{r}
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+genes_to_plot <- c("NR2F1", "NR2F2", "PROX1")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = fb_merged, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("NR2F1" = "green",
+                                "NR2F2" = "blue",
+                                "PROX1" = "orange")) +
+                                
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5) 
+  ) + 
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "NR2F1, NR2F2, PROX1 with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
+```{r}
+fb_merged <- RenameIdents(fb_merged, "LGE" = "AS0")
+DimPlot_scCustom(fb_merged, reduction = "umap", label = TRUE, pt.size = 0.5, repel = TRUE, label.box = TRUE)
+fb_merged$cell_type_v3 <- Idents(fb_merged)
+
+saveRDS(fb_merged, file = "fb_merged_v3.RDS")
+```
+```{r}
+DimPlot_scCustom(fb_merged, repel = TRUE, label.box = TRUE)
+Seurat::DimPlot(fb_merged, repel = TRUE, label = TRUE)
+```
+```{r}
+Idents(fb_merged) <- "sample"
+plot <- DimPlot_scCustom(fb_merged, reduction = "umap", group.by = "cell_type_v3", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = DiscretePalette_scCustomize(num_colors = 29, palette = "varibow", shuffle_pal = FALSE), color_seed = 5)
+
+plot + labs(x = "UMAP 1", y = "UMAP 2")
+
+
+ggsave("fig_1a.pdf", width = 12, height = 8, units = "in")
+```
+
+
+
+
+
+
+```{r}
+unique(fb_merged$sample)
+fb_merged$gest_age <- fb_merged$sample
+Idents(fb_merged) <- "gest_age"
+Idents(fb_merged)
+
+fb_merged <- RenameIdents(fb_merged, c("Ctrl13" = "158.4", "Ctrl24" = "147.4", "Ctrl25" = "144.3", "Ctrl26" = "157.4", 'Ctrl27' = "148.4", "Sal7" = "135.4", "Sal9" = "128.4", "Sal10" = "134.4", "Sal13" = "132.3"))
+fb_merged$gest_age <- Idents(fb_merged)
+# saveRDS(fb_merged, file = "fb_merged_v3.RDS")
+
+```
+
+
+```{r}
+# Get cell counts per cluster per sample
+cell_counts <- table(fb_merged@meta.data$cell_type_v3, fb_merged@meta.data$gest_age)
+cell_counts <- as.data.frame(cell_counts)
+cell_counts <- cell_counts[order(cell_counts$Var2, decreasing = TRUE), ]
+
+cell_counts_df <- as.data.frame(cell_counts)
+cell_counts_sorted <- cell_counts_df %>%
+  mutate(
+    # Reorder the factor levels of Var2 based on their numeric value
+    Var2 = fct_relevel(Var2, sort(as.character(levels(Var2)), decreasing = FALSE))
+  ) %>%
+  # Arrange the data frame by the new level order for proper display
+  arrange(Var2)
+
+# Check the new level order
+levels(cell_counts_sorted$Var2)
+# View the sorted data frame
+head(cell_counts_sorted)
+```
+
+```{r}
+# Define the list of cell types to remove
+cell_types_to_remove <- c("EP", "ChP", "Mono", "EC", "FIB", "T", "PC")
+
+# Filter the data and create the new grouped variable for facetting
+cell_counts_binned <- cell_counts_sorted %>%
+  filter(!Var1 %in% cell_types_to_remove) %>%
+  mutate(Var1_grouped = case_when(
+    Var1 %in% c("oRG-G", "AS0", "AS1", "AS2", "UP/I") ~ "Astro",
+    Var1 %in% c("OPC", "COP1", "COP2", "OL1", "OL2") ~ "Oligo",
+    Var1 %in% c("BAM", "MG0", "MG1") ~ "Micro",
+    # startsWith(as.character(Var1), "ExN") ~ "ExN",
+    Var1 %in% c("vRG", "CGE0", "CGE1", "IPC", "MGE", "ExN0", "ExN1") ~ "Neuro",
+    TRUE ~ as.character(Var1)
+  ))
+
+# Define custom colors
+my_custom_colors <- c(
+  "OL2" = "red",
+  "MG1" = "darkorange",
+  "vRG" = "dodgerblue",
+  "ExN1" = "skyblue",
+  "MGE" = "purple"
+)
+
+# Get all unique cell types
+all_cell_types <- unique(cell_counts_binned$Var1)
+default_colors <- colorRampPalette(brewer.pal(9, "Set1"))(length(all_cell_types))
+names(default_colors) <- all_cell_types
+
+# Combine custom colors with default colors
+final_colors <- default_colors
+final_colors[names(my_custom_colors)] <- my_custom_colors
+
+# Create a list to hold the individual plots
+plot_list <- list()
+facet_order <- unique(cell_counts_binned$Var1_grouped)
+num_facets <- length(facet_order)
+
+# Generate a plot for each facet group
+for (i in 1:num_facets) {
+  group_name <- facet_order[i]
+  group_data <- cell_counts_binned %>% filter(Var1_grouped == group_name)
+  group_colors <- final_colors[names(final_colors) %in% unique(group_data$Var1)]
+  
+  p <- ggplot(data = group_data, aes(x = Var2, y = Freq, fill = Var1)) +
+    geom_bar(stat = "identity", position = "fill", color = "black") +
+    labs(title = group_name, x = "Gestational Age", y = "Cell Proportion") +
+    guides(fill = guide_legend(title = "Cell Type", ncol = 1)) +
+    scale_fill_manual(values = group_colors) +
+    theme(
+      text = element_text(face = "bold"),
+      legend.position = "right", # Keep legend next to its plot
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.ticks.x = element_line()
+    )
+  
+  plot_list[[group_name]] <- p
+}
+
+# Combine the plots without collecting legends
+# This will arrange the plots in a 2x2 grid and each will have its own legend
+# You can use plot_list[["ExN"]] + plot_list[["G.E. Neuro"]] + ... for manual arrangement
+# A cleaner way is to use a layout and wrap_plots
+layout <- "
+  AABB
+  CCDD
+"
+combined_plot <- wrap_plots(plot_list, design = layout)
+
+# Add a title and theme for the overall figure
+combined_plot <- combined_plot + plot_annotation(
+  title = "Cell Proportion Per Sample, Ranked by Gestational Age",
+  theme = theme(
+    text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, size = 16)
+  )
+)
+
+# Display the combined plot
+combined_plot
+
+ggsave("fig_2b.pdf", width = 12, height = 8, units = "in")
+```
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+clustersToSubset <- c("ExN", "ImmN", "CGE0", "CGE1", "MGE", "IPC")
+data.sub <- subset(fb_merged, idents = clustersToSubset)
+DimPlot_scCustom(data.sub, reduction = "umap", label.box = TRUE)
+```
+
+
+
+
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = data.sub, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# cells.located2 <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+data.sub <- SetIdent(data.sub, cells = cells.located, value = 'selected_cells')
+# data.sub <- SetIdent(data.sub, cells = cells.located2, value = 'selected_cells2')
+
+data.sub <- RenameIdents(
+  object = data.sub,
+  'selected_cells' = "CombinedGroup"
+  # 'selected_cells2' = "CombinedGroup"
+)
+# Verify the selection with a new plot
+DimPlot(data.sub, reduction = "umap", group.by = 'ident')
+
+data.sub$lasso <- Idents(data.sub)
+
+saveRDS(data.sub, 'neuro.sub.RDS')
+data.sub <- readRDS("neuro.sub.RDS")
+
+combined_group_subset <- subset(data.sub, idents = "CombinedGroup")
+
+DimPlot(data.sub, reduction = "umap", group.by = 'lasso')
+
+# Correctly create the new metadata column using as.character()
+data.sub$cell_type_updated <- ifelse(
+  test = data.sub$lasso == "CombinedGroup",
+  yes = as.character(data.sub$cell_type_v3),
+  no = "other"
+)
+
+data.sub$cell_type_updated <- as.factor(data.sub$cell_type_updated)
+
+# Check the new assignments
+table(data.sub$cell_type_updated)
+
+# Now, plot with the new, correctly labeled column
+DimPlot_scCustom(data.sub, group.by = "cell_type_updated", reduction = "umap")
+
+Idents(data.sub) <- "cell_type_updated"
+subset_to_plot <- subset(data.sub, idents = "other", invert = TRUE)
+
+DimPlot_scCustom(subset_to_plot, group.by = "cell_type_updated", reduction = "umap")
+DimPlot_scCustom(subset_to_plot, reduction = "umap", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = DiscretePalette_scCustomize(num_colors = 29, palette = "varibow", shuffle_pal = TRUE), color_seed = 5)
+DimPlot_scCustom(subset_to_plot, reduction = "umap", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = c(CGE0 = "yellow", MGE = "blue", IPC = "turquoise", ExN = "orange", CGE1 = "purple", ImmN = "green" ), color_seed = 5)
+
+ggsave('fig_3a.pdf', width = 10, height = 8, units = "in")
+```
+```{r}
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+genes_to_plot <- c("EOMES", "GAD1", "SATB2")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = subset_to_plot, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer (keep original alpha)
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene),
+             size = 0.8,
+             alpha = 0.8) + # Set a single fixed alpha value for all foreground points
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("EOMES" = "green",
+                                "GAD1" = "blue",
+                                "SATB2" = "orange")) +
+  
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8))
+  ) +
+  labs(title = "EOMES, GAD1, SATB2") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("fig_3b.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+genes_to_plot <- c("LHX6", "PROX1", "TBR1")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = subset_to_plot, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer (keep original alpha)
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene),
+             size = 0.8,
+             alpha = 0.8) + # Set a single fixed alpha value for all foreground points
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("LHX6" = "green",
+                                "PROX1" = "blue",
+                                "TBR1" = "orange")) +
+  
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8))
+  ) +
+  labs(title = "LHX6, PROX1, TBR1") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+
+# ggplot() +
+#   # 1. Plot all cells as a light grey background layer
+#   geom_point(data = background_data,
+#              aes(x = umap_1, y = umap_2),
+#              color = "lightgrey",
+#              size = 0.5,
+#              alpha = 0.5) +
+# 
+#   # 2. Plot the shuffled, expressing cells on top
+#   geom_point(data = shuffled_data,
+#              aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+#              size = 0.8) +
+# 
+#   # Set manual colors for the 'color' aesthetic (gene identity)
+#   scale_color_manual(values = c("LHX6" = "green",
+#                                 "PROX1" = "blue",
+#                                 "TBR1" = "orange")) +
+# 
+#   # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+#   scale_alpha_continuous(
+#     range = c(0.1, 0.8),
+#     name = "Expression Level (Opacity)",
+#     # Change from guide_colorbar() to guide_legend()
+#     guide = guide_legend(title.position = "top", title.hjust = 0.5)
+#   ) +
+# 
+#   # Use guides() to override the *color* legend's appearance
+#   guides(
+#     color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+#     # Use guides() to further customize the alpha legend if needed
+#     alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+#   ) +
+#   labs(title = "LHX6, PROX1, TBR1 with Opacity by Expression") +
+#   theme_minimal() +
+#   theme(
+#     panel.grid = element_blank(),
+#     axis.line = element_line(color = "black"),
+#     legend.title = element_text(size = 14),
+#     legend.text = element_text(size = 12)
+#   )
+
+ggsave("fig_3c.pdf", width = 10, height = 8, units = "in")
+```
+
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+clustersToSubset <- c("OPC", "COP1", "COP2", "OL1", "OL2")
+data.sub <- subset(fb_merged, idents = clustersToSubset)
+DimPlot_scCustom(data.sub, reduction = "umap", label.box = TRUE)
+```
+
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = data.sub, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# cells.located2 <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+data.sub <- SetIdent(data.sub, cells = cells.located, value = 'selected_cells')
+# data.sub <- SetIdent(data.sub, cells = cells.located2, value = 'selected_cells2')
+
+data.sub <- RenameIdents(
+  object = data.sub,
+  'selected_cells' = "CombinedGroup"
+  # 'selected_cells2' = "CombinedGroup"
+)
+# Verify the selection with a new plot
+DimPlot(data.sub, reduction = "umap", group.by = 'ident')
+
+data.sub$lasso <- Idents(data.sub)
+
+saveRDS(data.sub, 'olig.sub.RDS')
+data.sub <- readRDS("olig.sub.RDS")
+
+
+combined_group_subset <- subset(data.sub, idents = "CombinedGroup")
+
+DimPlot(data.sub, reduction = "umap", group.by = 'lasso')
+
+# Correctly create the new metadata column using as.character()
+data.sub$cell_type_updated <- ifelse(
+  test = data.sub$lasso == "CombinedGroup",
+  yes = as.character(data.sub$cell_type_v3),
+  no = "other"
+)
+
+data.sub$cell_type_updated <- as.factor(data.sub$cell_type_updated)
+
+# Check the new assignments
+table(data.sub$cell_type_updated)
+
+# Now, plot with the new, correctly labeled column
+DimPlot_scCustom(data.sub, group.by = "cell_type_updated", reduction = "umap")
+
+Idents(data.sub) <- "cell_type_updated"
+subset_to_plot <- subset(data.sub, idents = "other", invert = TRUE)
+
+DimPlot_scCustom(subset_to_plot, group.by = "cell_type_updated", reduction = "umap")
+DimPlot_scCustom(subset_to_plot, reduction = "umap", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = DiscretePalette_scCustomize(num_colors = 29, palette = "polychrome", shuffle_pal = TRUE), color_seed = 5)
+
+
+ggsave("oligo_A.pdf", width = 10, height = 8, units = "in")
+
+```
+```{r}
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+genes_to_plot <- c("ENPP6", "MBP", "PCDH17")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = subset_to_plot, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer (keep original alpha)
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene),
+             size = 0.8,
+             alpha = 0.8) + # Set a single fixed alpha value for all foreground points
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("ENPP6" = "green",
+                                "MBP" = "blue",
+                                "PCDH17" = "orange")) +
+  
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8))
+  ) +
+  labs(title = "ENPP6, MBP, PCDH17") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+
+ggsave("fig_5b.pdf", width = 10, height = 8, units = "in")
+```
+
+```{r}
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+genes_to_plot <- c("PDGFRA", "MAL", "BCAS1")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = subset_to_plot, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer (keep original alpha)
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+  
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene),
+             size = 0.8,
+             alpha = 0.8) + # Set a single fixed alpha value for all foreground points
+  
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("PDGFRA" = "orange",
+                                "MAL" = "green",
+                                "BCAS1" = "blue")) +
+  
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8))
+  ) +
+  labs(title = "BCAS1, MAL, PDGFRA") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("fig_5c.pdf", width = 10, height = 8, units = "in")
+```
+
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+clustersToSubset <- c("AS0", "AS1", "AS2", "oRG-G")
+data.sub <- subset(fb_merged, idents = clustersToSubset)
+DimPlot_scCustom(data.sub, reduction = "umap", label.box = TRUE)
+```
+
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = data.sub, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# cells.located2 <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+data.sub <- SetIdent(data.sub, cells = cells.located, value = 'selected_cells')
+# data.sub <- SetIdent(data.sub, cells = cells.located2, value = 'selected_cells2')
+
+data.sub <- RenameIdents(
+  object = data.sub,
+  'selected_cells' = "CombinedGroup"
+  # 'selected_cells2' = "CombinedGroup"
+)
+# Verify the selection with a new plot
+DimPlot(data.sub, reduction = "umap", group.by = 'ident')
+
+data.sub$lasso <- Idents(data.sub)
+
+saveRDS(data.sub, 'astro.sub.RDS')
+data.sub <- readRDS("astro.sub.RDS")
+
+combined_group_subset <- subset(data.sub, idents = "CombinedGroup")
+
+DimPlot(data.sub, reduction = "umap", group.by = 'lasso')
+
+# Correctly create the new metadata column using as.character()
+data.sub$cell_type_updated <- ifelse(
+  test = data.sub$lasso == "CombinedGroup",
+  yes = as.character(data.sub$cell_type_v3),
+  no = "other"
+)
+
+data.sub$cell_type_updated <- as.factor(data.sub$cell_type_updated)
+
+# Check the new assignments
+table(data.sub$cell_type_updated)
+
+# Now, plot with the new, correctly labeled column
+DimPlot_scCustom(data.sub, group.by = "cell_type_updated", reduction = "umap")
+
+Idents(data.sub) <- "cell_type_updated"
+subset_to_plot <- subset(data.sub, idents = "other", invert = TRUE)
+
+DimPlot_scCustom(subset_to_plot, group.by = "cell_type_updated", reduction = "umap")
+DimPlot_scCustom(subset_to_plot, reduction = "umap", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = DiscretePalette_scCustomize(num_colors = 29, palette = "polychrome", shuffle_pal = TRUE), color_seed = 5)
+
+
+ggsave("fig_6a.pdf", width = 10, height = 8, units = "in")
+
+```
+```{r}
+# Define the gene combinations you want to plot
+gene_combinations_list <- list(
+  "EGFR + GFAP" = c("EGFR", "GFAP"),
+  "FABP7 + GFAP" = c("FABP7", "GFAP"),
+  "EGFR + ID2" = c("EGFR", "ID2"),
+  "EGFR + AQP4" = c("EGFR", "AQP4")
+)
+
+# Extract unique genes needed across all combinations
+all_genes_needed <- unique(unlist(gene_combinations_list))
+
+# Ensure all required genes are in your Seurat object
+if (!all(all_genes_needed %in% rownames(fb_merged))) { # Assuming your object is named fb_merged
+  stop("One or more genes not found in the Seurat object.")
+}
+
+# 1. Extract UMAP coordinates
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+
+# 2. Extract expression data for all genes
+# Assuming this returns 0 for non-expressing cells (standard Seurat behavior)
+expression_data <- FetchData(object = subset_to_plot, vars = all_genes_needed)
+
+# 3. Combine coordinates and expression into one base data frame
+base_plot_data <- cbind(umap_coords, expression_data)
+
+# 4. Loop through combinations and generate co-expression status for each plot
+plot_data_list <- lapply(names(gene_combinations_list), function(combo_name) {
+  genes <- gene_combinations_list[[combo_name]]
+  gene1 <- genes[1]
+  gene2 <- genes[2]
+  
+  # Create a categorical co-expression status column
+  data <- base_plot_data %>%
+    mutate(
+      CoExpression_Status = case_when(
+        !!sym(gene1) > 0 & !!sym(gene2) > 0 ~ "Both Genes Expressed",
+        !!sym(gene1) > 0 & !!sym(gene2) == 0 ~ paste(gene1, "Only"),
+        !!sym(gene1) == 0 & !!sym(gene2) > 0 ~ paste(gene2, "Only"),
+        TRUE ~ "Neither Expressed"
+      ),
+      Combination = combo_name # Add the combination name for faceting
+    ) %>%
+    # Order the factor levels to ensure "Both" plots on top
+    mutate(
+      CoExpression_Status = factor(CoExpression_Status, 
+                                   levels = c("Neither Expressed", 
+                                              paste(gene1, "Only"), 
+                                              paste(gene2, "Only"),
+                                              "Both Genes Expressed"))
+    )
+  return(data)
+})
+
+# 5. Combine all list elements into a single data frame for plotting
+final_plot_data <- bind_rows(plot_data_list)
+
+# 6. Generate the ggplot with facets
+ggplot(final_plot_data, aes(x = umap_1, y = umap_2, color = CoExpression_Status)) +
+  # Plot all cells first (neutral color, low alpha)
+  geom_point(data = . %>% filter(CoExpression_Status == "Neither Expressed"), 
+             color = "lightgrey", alpha = 0.5, size = 0.5) +
+             
+  # Plot expressing cells on top (colored by status)
+  geom_point(data = . %>% filter(CoExpression_Status != "Neither Expressed"), 
+             alpha = 0.8, size = 0.8) +
+
+  scale_color_manual(
+    values = c("black", "blue", "green", "red", "orange", "purple"), # Assign specific colors
+  name = "Expression Status"
+  ) +
+ 
+  
+  # Use facet_wrap to create 4 tiled plots
+  facet_wrap(~ Combination, ncol = 2) +
+  
+  theme_minimal() +
+  labs(title = "Co-expression status for 4 gene combinations") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "right",
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave("fig_6b.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+DefaultAssay(fb_merged) <- "SCT"
+DefaultAssay(fb_merged) <- "RNA"
+gradient <- c("blue", "white", "red")
+micro_plot <- DotPlot_scCustom(fb_merged, features = c( "DCX", "NEUROD1", "EOMES", "TBR1", "SOX5",  "POU3F2", "NR2F1", "NRP1",                                                             "CRYM", "SLC17A6", "NEUROD2", "TLE4", "SATB2", "UNC5D", "GRIA2", "CUX1",                                                             "CUX2", "RORB", "GRIN2B", "SLC17A7", "CAMK2A", "NRGN"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+micro_plot_filtered <- micro_plot + 
+  scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+micro_plot_filtered
+
+```
+
+```{r}
+
+FeaturePlot_scCustom(fb_merged, features = "DDX3Y")
+```
+```{r}
+unique(fb_merged$sample)
+fb_merged$col_date <- fb_merged$sample
+Idents(fb_merged) <- "col_date"
+Idents(fb_merged)
+
+fb_merged <- RenameIdents(fb_merged, c("Ctrl13" = "03.31.20", "Ctrl24" = "06.20.23", "Ctrl25" = "08.31.23", "Ctrl26" = "01.15.25", 'Ctrl27' = "02.13.25", "Sal7" = "12.20.19", "Sal9" = "12.02.20", "Sal10" = "06.17.21", "Sal13" = "09.07.23"))
+fb_merged$col_date <- Idents(fb_merged)
+saveRDS(fb_merged, file = "fb_merged_v3.RDS")
+
+
+```
+```{r}
+# Get cell counts per cluster per sample
+cell_counts <- table(fb_merged@meta.data$cell_type_v3, fb_merged@meta.data$col_date)
+cell_counts <- as.data.frame(cell_counts)
+cell_counts <- cell_counts[order(cell_counts$Var2, decreasing = TRUE), ]
+
+cell_counts_df <- as.data.frame(cell_counts)
+cell_counts_sorted <- cell_counts_df %>%
+  mutate(
+    # Convert Var2 to a Date object first
+    Var2 = as.Date(as.character(Var2), format = "%m.%d.%y")
+  ) %>%
+  # Arrange the data frame by the date column (ascending order by default)
+  arrange(Var2)
+
+# Check the new level order
+levels(cell_counts_sorted$Var2)
+# View the sorted data frame
+head(cell_counts_sorted)
+```
+
+```{r}
+# Ensure date column Var2 is a Date object first, then sort the data frame
+cell_counts_df$Var2 <- as.Date(cell_counts_df$Var2, format = "%m.%d.%y")
+cell_counts_sorted <- cell_counts_df[order(cell_counts_df$Var2), ]
+
+# Define the list of cell types to remove (from original code)
+cell_types_to_remove <- c("Ep", "ChP", "Mono", "EC", "FIB", "T", "PC")
+
+# Filter the data and create the new grouped variable for facetting
+cell_counts_binned <- cell_counts_sorted %>%
+  mutate(Var1_grouped = case_when(
+    Var1 %in% c("oRG-G", "AS0", "AS1", "AS2", "UP/I") ~ "Astro",
+    Var1 %in% c("OPC", "COP1", "COP2", "OL1", "OL2") ~ "Oligo",
+    Var1 %in% c("BAM", "MG0", "MG1", "MG2") ~ "Micro",
+    Var1 %in% c("vRG", "CGE0", "CGE1", "IPC", "MGE", "ExN0", "ExN1") ~ "Neuro",
+    Var1 %in% c(c("Ep", "ChP", "Mono", "EC", "FIB", "T", "PC")) ~ "Misc",
+    TRUE ~ as.character(Var1)
+  )) %>%
+  # Ensure Var2 remains a Date object after piping
+  mutate(Var2 = as.Date(Var2, format = "%m.%d.%y"))
+
+
+# Create a temporary data frame with unique sample dates and their corresponding gestational ages
+# This assumes 'fb_merged' is available in your R environment
+sample_info <- fb_merged@meta.data %>%
+  select(col_date, gest_age) %>%
+  distinct() %>%
+  # Ensure the date column is a Date object for the join to work correctly
+  mutate(col_date = as.Date(col_date, format = "%m.%d.%y"))
+
+# Join this new information into your main data frame by the date column
+cell_counts_binned <- left_join(cell_counts_binned, sample_info, by = c("Var2" = "col_date"))
+
+# Create an *ordered factor* for the x-axis: levels are the labels, ordered by the original date
+cell_counts_binned <- cell_counts_binned %>%
+  mutate(
+    display_label = as.character(gest_age), # Use just the gestational age as the label
+    x_axis_ordered = factor(display_label, levels = unique(display_label[order(Var2)]))
+  )
+
+
+# --- Step 2: Color Definitions (from original code) ---
+
+# Define custom colors
+my_custom_colors <- c("vRG" = "dodgerblue")
+
+# Get all unique cell types
+all_cell_types <- unique(cell_counts_binned$Var1)
+default_colors <- colorRampPalette(brewer.pal(9, "Set1"))(length(all_cell_types))
+names(default_colors) <- all_cell_types
+
+# Combine custom colors with default colors
+final_colors <- default_colors
+final_colors[names(my_custom_colors)] <- my_custom_colors
+
+
+# --- Step 3: Generate Plots in Loop and Combine ---
+
+plot_list <- list()
+facet_order <- unique(cell_counts_binned$Var1_grouped)
+num_facets <- length(facet_order)
+
+# Generate a plot for each facet group
+for (i in 1:num_facets) {
+  group_name <- facet_order[i]
+  group_data <- cell_counts_binned %>% filter(Var1_grouped == group_name)
+  group_colors <- final_colors[names(final_colors) %in% unique(group_data$Var1)]
+  
+  p <- ggplot(data = group_data, 
+              aes(x = x_axis_ordered, y = Freq, fill = Var1)) + # Use the new ordered factor here
+    geom_bar(stat = "identity", position = "fill", color = "black") +
+    labs(title = group_name, x = "Gestational Age", y = "Cell Proportion") + # Update the x-axis title
+    guides(fill = guide_legend(title = "Cell Type", ncol = 1)) +
+    scale_fill_manual(values = group_colors) +
+    theme(
+      text = element_text(face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.ticks.x = element_line()
+    )
+  
+  plot_list[[group_name]] <- p
+}
+
+# Combine the plots using patchwork
+layout <- "
+  AABB
+  CCDD
+"
+combined_plot <- wrap_plots(plot_list, design = layout)
+
+# Add a title and theme for the overall figure
+combined_plot <- combined_plot + plot_annotation(
+  title = "Cell Proportion Per Sample, Ranked by Sample Date/Gestational Age",
+  theme = theme(
+    text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, size = 16)
+  )
+)
+
+# Display the combined plot
+print(combined_plot)
+
+ggsave("fig_for_raj.pdf", width = 12, height = 8, units = "in")
+```
+```{r}
+ggplot(data = cell_counts_binned, 
+       aes(x = x_axis_ordered, y = Freq, fill = Var1_grouped)) + 
+  geom_bar(stat = "identity", position = "fill", colour = "black") + # position="fill" for proportions
+  labs(
+    title = "Cell Proportions Per Sample, Grouped by Cell Class", 
+    x = "Gestational Age", 
+    y = "Cell Proportion (0-1)"
+  ) +
+  guides(fill = guide_legend(title = "Cell Class")) +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+
+ggsave("cell_prop_smpl.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+ggplot(data = cell_counts_binned, 
+       aes(x = x_axis_ordered, y = Freq, fill = Var1_grouped)) + 
+  geom_bar(stat = "identity", position = "stack", color = "black") + # position="stack" for raw counts
+  labs(
+    title = "Cell Counts Per Sample, Grouped by Cell Class", 
+    x = "Gestational Age", 
+    y = "Total Cell Counts (Freq)"
+  ) +
+  guides(fill = guide_legend(title = "Cell Class")) +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+ggsave("cell_counts_smpl.pdf", width = 10, height = 8, units = "in")
+
+```
+```{r}
+# Get cell counts per cluster per sample
+cell_counts <- table(fb_merged@meta.data$cell_type_v3, fb_merged@meta.data$gest_age)
+cell_counts <- as.data.frame(cell_counts)
+cell_counts <- cell_counts[order(cell_counts$Var2, decreasing = TRUE), ]
+
+cell_counts_df <- as.data.frame(cell_counts)
+cell_counts_sorted <- cell_counts_df %>%
+  mutate(
+    # Reorder the factor levels of Var2 based on their numeric value
+    Var2 = fct_relevel(Var2, sort(as.character(levels(Var2)), decreasing = FALSE))
+  ) %>%
+  # Arrange the data frame by the new level order for proper display
+  arrange(Var2)
+
+# Check the new level order
+levels(cell_counts_sorted$Var2)
+# View the sorted data frame
+head(cell_counts_sorted)
+```
+```{r}
+# Ensure date column Var2 is a Date object first, then sort the data frame
+cell_counts_sorted <- cell_counts_df[order(cell_counts_df$Var2, decreasing = TRUE), ]
+
+# Define the list of cell types to remove (from original code)
+cell_types_to_remove <- c("Ep", "ChP", "Mono", "EC", "FIB", "T", "PC")
+
+# Filter the data and create the new grouped variable for facetting
+cell_counts_binned <- cell_counts_sorted %>%
+  mutate(Var1_grouped = case_when(
+    Var1 %in% c("oRG-G", "AS0", "AS1", "AS2", "UP/I") ~ "Astro",
+    Var1 %in% c("OPC", "COP1", "COP2", "OL1", "OL2") ~ "Oligo",
+    Var1 %in% c("BAM", "MG0", "MG1", "MG2") ~ "Micro",
+    Var1 %in% c("vRG", "CGE0", "CGE1", "IPC", "MGE", "ExN0", "ExN1") ~ "Neuro",
+    Var1 %in% c(c("Ep", "ChP", "Mono", "EC", "FIB", "T", "PC")) ~ "Misc",
+    TRUE ~ as.character(Var1)
+  ))
+
+# Create an *ordered factor* for the x-axis: levels are the labels, ordered by the gestational age
+cell_counts_binned <- cell_counts_binned %>%
+  mutate(
+    display_label = as.character(Var2), # Use just the gestational age as the label
+    x_axis_ordered = factor(display_label, levels = unique(display_label[order(Var2)]))
+  )
+# Reverse the order of factor levels for Var2 in your data frame
+cell_counts_binned$Var2 <- factor(cell_counts_binned$Var2, 
+                                   levels = rev(levels(cell_counts_binned$Var2)))
+
+head(cell_counts_binned)
+
+total_counts_by_group_and_var2 <- cell_counts_binned %>%
+  group_by(Var1_grouped, Var2) %>% # Group by both columns
+  summarize(TotalFreq = sum(Freq, na.rm = TRUE),
+            .groups = 'drop') # .groups = 'drop' removes grouping from the result
+
+sorted_data <- total_counts_by_group_and_var2 %>%
+  mutate(Var2_numeric = as.numeric(as.character(Var2))) %>%
+  arrange(Var2_numeric) %>%
+  mutate(Var2 = factor(Var2, levels = unique(Var2))) %>%
+  select(-Var2_numeric)
+  
+  
+print(sorted_data)
+
+```
+```{r}
+# Build the plot object but don't display it yet
+g <- ggplot(data = sorted_data, 
+            aes(x = Var2, y = TotalFreq, fill = Var1_grouped)) + 
+     geom_bar(stat = "identity", position = "fill", colour = "black") +
+     theme_minimal() 
+
+# Extract the build data to find the computed colors
+plot_build <- ggplot_build(g)
+
+# Extract the colors used by the 'fill' aesthetic in the first layer
+original_colors <- unique(plot_build$data[[1]]$fill)
+
+# Get the names of the groups in the order they appear in the data
+all_groups <- unique(sorted_data$Var1_grouped)
+
+# Assign names to the colors vector
+names(original_colors) <- all_groups
+
+# Print the list of colors to see what you were originally using
+print(original_colors)
+
+# Change the color for the specific group you want to highlight
+original_colors["Micro"] <- "yellow" 
+
+ggplot(data = sorted_data, 
+       aes(x = Var2, y = TotalFreq, fill = Var1_grouped)) + 
+  geom_bar(stat = "identity", position = "fill", colour = "black") + 
+  
+  # Add the scale_fill_manual using the modified colors
+  scale_fill_manual(values = original_colors) + 
+  
+  labs(
+    title = "Cell Proportions Per Sample, Grouped by Cell Class", 
+    x = "Gestational Age", 
+    y = "Cell Proportion (0-1)"
+  ) +
+  guides(fill = guide_legend(title = "Cell Class")) +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+ggsave("fig_2a.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+ggplot(data = sorted_data, 
+       aes(x = Var2, y = TotalFreq, fill = Var1_grouped)) + 
+  geom_bar(stat = "identity", position = "stack", colour = "black") + 
+  
+  # Add the scale_fill_manual using the modified colors
+  scale_fill_manual(values = original_colors) + 
+  
+  labs(
+    title = "Cell Counts Per Sample, Grouped by Cell Class", 
+    x = "Gestational Age", 
+    y = "Cell Counts"
+  ) +
+  guides(fill = guide_legend(title = "Cell Class")) +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+ggsave("fig_2_sup.pdf", width = 10, height = 8, units = "in")
+```
+
+
+
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+Idents(fb_merged) <- "sample"
+gradient <- c("blue", "white", "red")
+
+DotPlot_scCustom(fb_merged, c('MITF', 'TFE3', 'TFEB'), x_lab_rotate = TRUE, flip_axes = TRUE, colors_use = gradient)
+ggsave("genes_of_int_sample.pdf", width = 10, height = 6, units = "in")
+```
+
+
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+clustersToSubset <- c("MG0", "MG1", "BAM")
+data.sub <- subset(fb_merged, idents = clustersToSubset)
+DimPlot_scCustom(data.sub, reduction = "umap", label.box = TRUE)
+```
+```{r}
+# Generate the UMAP plot
+plot <- DimPlot(object = data.sub, reduction = "umap")
+
+# Pass the plot to CellSelector()
+# The R console will prompt you to select points on the plot
+cells.located <- CellSelector(plot = plot)
+# cells.located2 <- CellSelector(plot = plot)
+# Create a new identity class for the selected cells
+data.sub <- SetIdent(data.sub, cells = cells.located, value = 'selected_cells')
+# data.sub <- SetIdent(data.sub, cells = cells.located2, value = 'selected_cells2')
+
+data.sub <- RenameIdents(
+  object = data.sub,
+  'selected_cells' = "CombinedGroup"
+  # 'selected_cells2' = "CombinedGroup"
+)
+# Verify the selection with a new plot
+DimPlot(data.sub, reduction = "umap", group.by = 'ident')
+
+data.sub$lasso <- Idents(data.sub)
+
+saveRDS(data.sub, 'micro.sub.RDS')
+data.sub <- readRDS("micro.sub.RDS")
+
+combined_group_subset <- subset(data.sub, idents = "CombinedGroup")
+
+DimPlot(data.sub, reduction = "umap", group.by = 'lasso')
+
+# Correctly create the new metadata column using as.character()
+data.sub$cell_type_updated <- ifelse(
+  test = data.sub$lasso == "CombinedGroup",
+  yes = as.character(data.sub$cell_type_v3),
+  no = "other"
+)
+
+data.sub$cell_type_updated <- as.factor(data.sub$cell_type_updated)
+
+# Check the new assignments
+table(data.sub$cell_type_updated)
+
+# Now, plot with the new, correctly labeled column
+DimPlot_scCustom(data.sub, group.by = "cell_type_updated", reduction = "umap")
+
+Idents(data.sub) <- "cell_type_updated"
+subset_to_plot <- subset(data.sub, idents = "other", invert = TRUE)
+
+DimPlot_scCustom(subset_to_plot, group.by = "cell_type_updated", reduction = "umap")
+DimPlot_scCustom(subset_to_plot, reduction = "umap", label = TRUE, label.box = TRUE, pt.size = 0.5, repel = TRUE, shuffle = TRUE, colors_use = DiscretePalette_scCustomize(num_colors = 29, palette = "polychrome", shuffle_pal = TRUE), color_seed = 5)
+
+ggsave('fig_4a.pdf', width = 10, height = 8, units = "in")
+```
+
+```{r}
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+genes_to_plot <- c("CSF1R", "AIF1")
+
+if (!all(genes_to_plot %in% rownames(fb_merged))) {
+  stop("One or more genes not found in the Seurat object.")
+}
+
+expression_data <- FetchData(object = subset_to_plot, vars = genes_to_plot)
+background_data <- umap_coords
+
+plot_data <- cbind(umap_coords, expression_data)
+
+long_data <- plot_data %>%
+  pivot_longer(
+    cols = all_of(genes_to_plot),
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  filter(expression > 0)
+
+shuffled_data <- long_data %>%
+  sample_frac(1)
+
+ggplot() +
+  # 1. Plot all cells as a light grey background layer
+  geom_point(data = background_data,
+             aes(x = umap_1, y = umap_2),
+             color = "lightgrey",
+             size = 0.5,
+             alpha = 0.5) +
+
+  # 2. Plot the shuffled, expressing cells on top
+  geom_point(data = shuffled_data,
+             aes(x = umap_1, y = umap_2, color = gene, alpha = expression),
+             size = 0.8) +
+
+  # Set manual colors for the 'color' aesthetic (gene identity)
+  scale_color_manual(values = c("AIF1" = "blue",
+                                "CSF1R" = "orange")) +
+
+  # Control the alpha scale. Use guide_legend() to show alpha variations correctly.
+  scale_alpha_continuous(
+    range = c(0.1, 0.8),
+    name = "Expression Level (Opacity)",
+    # Change from guide_colorbar() to guide_legend()
+    guide = guide_legend(title.position = "top", title.hjust = 0.5)
+  ) +
+
+  # Use guides() to override the *color* legend's appearance
+  guides(
+    color = guide_legend(title = "Gene Identity", override.aes = list(size = 4, alpha = 0.8)),
+    # Use guides() to further customize the alpha legend if needed
+    alpha = guide_legend(override.aes = list(size = 4, color = "black"))
+  ) +
+  labs(title = "AIF1, CSF1R with Opacity by Expression") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("fig_4b.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+# Convert to anndata for scVelo analysis using scCustomize
+as.anndata(
+  x = fb_merged,
+  file_path = "/mmfs1/gscratch/kawaldorflab/jcorn427/fet_brain/fb_03",
+  file_name = "fb_merged_adata.h5ad"
+)
+```
+```{r}
+Idents(fb_merged) <- "cell_type_v3"
+FeaturePlot_scCustom(fb_merged, features = c('SLC17A6', 'SYT1', 'SNAP25', 'TBR1', 'SATB2', 'SLC17A7', 'NRGN', 'CAMK2A'), num_columns = 3, label = F)
+
+FeaturePlot_scCustom(fb_merged, features = c('ND2', 'ND3', 'ND5'), num_columns = 2, label = F)
+ggsave("nd_genes.pdf", width = 10, height = 8, units = "in")
+```
+```{r, fig.width=20, fig.height=8}
+fb_merged <- PercentageFeatureSet(fb_merged, pattern = "^MT", col.name = "percent.mt")
+
+VlnPlot(fb_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 1, pt.size = 0)
+ggsave("percent_mt.pdf", width = 8, height = 20, units = "in")
+```
+```{r}
+# Define the gene combinations you want to plot
+gene_combinations_list <- list(
+  "TBR1 + SATB2" = c("TBR1", "SATB2"),
+  "SLC17A7 + TBR1" = c("SLC17A7", "TBR1"),
+  "SLC17A7 + SATB2" = c("SLC17A7", "SATB2"),
+  "SLC17A7 + SLC17A6" = c("SLC17A7", "SLC17A6")
+)
+
+# Extract unique genes needed across all combinations
+all_genes_needed <- unique(unlist(gene_combinations_list))
+
+# Ensure all required genes are in your Seurat object
+if (!all(all_genes_needed %in% rownames(fb_merged))) { # Assuming your object is named fb_merged
+  stop("One or more genes not found in the Seurat object.")
+}
+
+# 1. Extract UMAP coordinates
+umap_coords <- as.data.frame(subset_to_plot@reductions$umap@cell.embeddings)
+
+# 2. Extract expression data for all genes
+# Assuming this returns 0 for non-expressing cells (standard Seurat behavior)
+expression_data <- FetchData(object = subset_to_plot, vars = all_genes_needed)
+
+# 3. Combine coordinates and expression into one base data frame
+base_plot_data <- cbind(umap_coords, expression_data)
+
+# 4. Loop through combinations and generate co-expression status for each plot
+plot_data_list <- lapply(names(gene_combinations_list), function(combo_name) {
+  genes <- gene_combinations_list[[combo_name]]
+  gene1 <- genes[1]
+  gene2 <- genes[2]
+  
+  # Create a categorical co-expression status column
+  data <- base_plot_data %>%
+    mutate(
+      CoExpression_Status = case_when(
+        !!sym(gene1) > 0 & !!sym(gene2) > 0 ~ "Both Genes Expressed",
+        !!sym(gene1) > 0 & !!sym(gene2) == 0 ~ paste(gene1, "Only"),
+        !!sym(gene1) == 0 & !!sym(gene2) > 0 ~ paste(gene2, "Only"),
+        TRUE ~ "Neither Expressed"
+      ),
+      Combination = combo_name # Add the combination name for faceting
+    ) %>%
+    # Order the factor levels to ensure "Both" plots on top
+    mutate(
+      CoExpression_Status = factor(CoExpression_Status, 
+                                   levels = c("Neither Expressed", 
+                                              paste(gene1, "Only"), 
+                                              paste(gene2, "Only"),
+                                              "Both Genes Expressed"))
+    )
+  return(data)
+})
+
+# 5. Combine all list elements into a single data frame for plotting
+final_plot_data <- bind_rows(plot_data_list)
+
+# 6. Generate the ggplot with facets
+ggplot(final_plot_data, aes(x = umap_1, y = umap_2, color = CoExpression_Status)) +
+  # Plot all cells first (neutral color, low alpha)
+  geom_point(data = . %>% filter(CoExpression_Status == "Neither Expressed"), 
+             color = "lightgrey", alpha = 0.5, size = 0.5) +
+             
+  # Plot expressing cells on top (colored by status)
+  geom_point(data = . %>% filter(CoExpression_Status != "Neither Expressed"), 
+             alpha = 0.8, size = 0.8) +
+
+  scale_color_manual(
+    values = c("black", "blue", "green", "red", "orange"), # Assign specific colors
+  name = "Expression Status"
+  ) +
+ 
+  
+  # Use facet_wrap to create 4 tiled plots
+  facet_wrap(~ Combination, ncol = 2) +
+  
+  theme_minimal() +
+  labs(title = "Co-expression status for 4 gene combinations") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "right",
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave("ExN1_coex.pdf", width = 10, height = 8, units = "in")
+```
+```{r HSV-1 dot plot, fig.width=12, fig.height=6}
+gradient <- c("blue", "white", "red")
+hsv_1_plot <- DotPlot_scCustom(fb_merged, features = c( "SDC2", "TNFRSF14", "C3", "C3BI", "NECTIN1",  "HS3ST3A1", "ITGB6",                                                              "ITGAV", "ITGB8", "PILRA", "MYH9", "MYH10", "PIK3CD", "DNM2"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+hsv_1_plot
+ggsave("hsv_1_plot.pdf", width = 15, height = 8, units = "in")
+
+```
+```{r}
+gradient <- c("blue", "white", "red")
+hsv_2_plot <- DotPlot_scCustom(fb_merged, features = c( "SDC2", "NECTIN1",  "NECTIN2"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+hsv_2_plot
+ggsave("hsv_2_plot.pdf", width = 15, height = 6, units = "in")
+```
+
+
+
+```{r}
+gradient <- c("blue", "white", "red")
+zika_plot <- DotPlot_scCustom(fb_merged, features = c( "AXL", "TYRO3", "MERTK", "HAVCR1", "HAVCR2",  "CD209", "CLEC4M",                                                              "EGFR", "NCAM1", "HSPA4", "ITGB5", "ITGB4", "ITGB3"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+zika_plot
+ggsave("zika_plot.pdf", width = 15, height = 8, units = "in")
+```
+
+```{r}
+gradient <- c("blue", "white", "red")
+CMV_plot <- DotPlot_scCustom(fb_merged, features = c( "NRP2", "PDGFRA", "THY1", "BSG", "EGFR",  "SDC1", "SDC2",                                                              "SDC3", "SDC4", "GPC1", "GPC2", "GPC3", "GPC4", "GPC5", "GPC6", "ANPEP", "CD151",
+                                                      "CD46", "OR14I1", "CD209", "ITGB3",  "ITGA2", "ITGB1", "ITGAV", "ITGA6"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+CMV_plot
+ggsave("CMV_plot.pdf", width = 15, height = 8, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+HIV_plot <- DotPlot_scCustom(fb_merged, features = c( "CD4", "MBL2", "CCR5", "CXCR4"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+HIV_plot
+ggsave("HIV_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+SARS_plot <- DotPlot_scCustom(fb_merged, features = c( "ACE2", "VIM"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+SARS_plot
+ggsave("SARS_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+MERS_plot <- DotPlot_scCustom(fb_merged, features = c( "DPP4", "TMPRSS2"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+MERS_plot
+ggsave("MERS_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+Parv_plot <- DotPlot_scCustom(fb_merged, features = c( "A4GALT", "FN1"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+Parv_plot
+ggsave("Parv_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+Chik_plot <- DotPlot_scCustom(fb_merged, features = c("BSG"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+Chik_plot
+ggsave("Chik_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+Hanta_plot <- DotPlot_scCustom(fb_merged, features = c("ITGB1", "ITGB2", "ITGB3", "CD55", "C1QBP", "PCDH1"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+Hanta_plot
+ggsave("Hanta_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+Nipah_plot <- DotPlot_scCustom(fb_merged, features = c("EFNB2", "EFNB3"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+Nipah_plot
+ggsave("Nipah_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+HBV_plot <- DotPlot_scCustom(fb_merged, features = c("SLC10A1"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+HBV_plot
+ggsave("HBV_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+RSV_plot <- DotPlot_scCustom(fb_merged, features = c("CX3CR1", "EGFR", "IGF1R", "ICAM1"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+RSV_plot
+ggsave("RSV_plot.pdf", width = 15, height = 6, units = "in")
+```
+```{r}
+gradient <- c("blue", "white", "red")
+RSV_plot <- DotPlot_scCustom(fb_merged, features = c("CX3CR1", "EGFR", "IGF1R", "ICAM1"), 
+                               group.by = "cell_type_v3", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE,                                    colors_use = gradient) + labs(x = "Gene", y = "Cluster")
+
+# hsv_1_plot_filtered <- micro_plot + 
+#   scale_y_discrete(limits = c("ExN0", "ExN1")) # Insert clusters to display here
+# hsv_1_plot_filtered
+
+RSV_plot
+ggsave("RSV_plot.pdf", width = 15, height = 6, units = "in")
+```
+
+```{r}
+# Define the gene combinations you want to plot
+gene_combinations_list <- list(
+  "ATP5F1B + ND4" = c("ATP5F1B", "ND4"),
+  "NDUFS1 + ND4" = c("NDUFS1", "ND4"),
+  "COX4I1 + ND4" = c("COX4I1", "ND4"),
+  "UQCRQ + ND4" = c("UQCRQ", "ND4")
+)
+
+# Extract unique genes needed across all combinations
+all_genes_needed <- unique(unlist(gene_combinations_list))
+
+# Ensure all required genes are in your Seurat object
+if (!all(all_genes_needed %in% rownames(fb_merged))) { # Assuming your object is named fb_merged
+  stop("One or more genes not found in the Seurat object.")
+}
+
+# 1. Extract UMAP coordinates
+umap_coords <- as.data.frame(fb_merged@reductions$umap@cell.embeddings)
+
+# 2. Extract expression data for all genes
+# Assuming this returns 0 for non-expressing cells (standard Seurat behavior)
+expression_data <- FetchData(object = fb_merged, vars = all_genes_needed)
+
+# 3. Combine coordinates and expression into one base data frame
+base_plot_data <- cbind(umap_coords, expression_data)
+
+# 4. Loop through combinations and generate co-expression status for each plot
+plot_data_list <- lapply(names(gene_combinations_list), function(combo_name) {
+  genes <- gene_combinations_list[[combo_name]]
+  gene1 <- genes[1]
+  gene2 <- genes[2]
+  
+  # Create a categorical co-expression status column
+  data <- base_plot_data %>%
+    mutate(
+      CoExpression_Status = case_when(
+        !!sym(gene1) > 0 & !!sym(gene2) > 0 ~ "Both Genes Expressed",
+        !!sym(gene1) > 0 & !!sym(gene2) == 0 ~ paste(gene1, "Only"),
+        !!sym(gene1) == 0 & !!sym(gene2) > 0 ~ paste(gene2, "Only"),
+        TRUE ~ "Neither Expressed"
+      ),
+      Combination = combo_name # Add the combination name for faceting
+    ) %>%
+    # Order the factor levels to ensure "Both" plots on top
+    mutate(
+      CoExpression_Status = factor(CoExpression_Status, 
+                                   levels = c("Neither Expressed", 
+                                              paste(gene1, "Only"), 
+                                              paste(gene2, "Only"),
+                                              "Both Genes Expressed"))
+    )
+  return(data)
+})
+
+# 5. Combine all list elements into a single data frame for plotting
+final_plot_data <- bind_rows(plot_data_list)
+
+# 6. Generate the ggplot with facets
+ggplot(final_plot_data, aes(x = umap_1, y = umap_2, color = CoExpression_Status)) +
+  # Plot all cells first (neutral color, low alpha)
+  geom_point(data = . %>% filter(CoExpression_Status == "Neither Expressed"), 
+             color = "lightgrey", alpha = 0.5, size = 0.5) +
+             
+  # Plot expressing cells on top (colored by status)
+  geom_point(data = . %>% filter(CoExpression_Status != "Neither Expressed"), 
+             alpha = 0.8, size = 0.8) +
+
+  scale_color_manual(
+    values = c("black", "blue", "green", "red", "orange", "purple"), # Assign specific colors
+  name = "Expression Status"
+  ) +
+ 
+  
+  # Use facet_wrap to create 4 tiled plots
+  facet_wrap(~ Combination, ncol = 2) +
+  
+  theme_minimal() +
+  labs(title = "Co-expression status for 4 gene combinations") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "right",
+    strip.text = element_text(face = "bold")
+  )
+```
+```{r}
+FeaturePlot_scCustom(fb_merged, features = "nCount_RNA", colors_use = gradient)
+```
+```{r}
+FeaturePlot_scCustom(fb_merged, features = c("MAP2", "NEFL", "NEFM", "NEFH", "GAP43", "DCX", "STMN2", "SYT1", "SNAP25",
+                                             "SYP", "RBFOX3"))
+ggsave("neuro_markers_01.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged, features = c("GAD1", "GAD2", "SLC6A1", "SLC32A1", "LHX6", "DLX1", "DLX2", "DLX5", "DLX6",
+                                             "ARX", "NR2F2", "GABRB2", "GABRA1", "GABRG2", "KCNC1"))
+ggsave("neuro_markers_02.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+FeaturePlot_scCustom(fb_merged, features = c("SATB2", "BCL11B", "TBR1", "FEZF2", "POU3F2", "NEUROD2", "NEUROD6", "SLC17A7", 
+                                             "CAMK2A", "GRIN2B", "GRIA2", "KCNQ2", "KCNQ3", "CNTNAP2"))
+ggsave("neuro_markers_03.pdf", width = 10, height = 8, units = "in")
+```
+```{r}
+Idents(fb_merged) <- 'cell_type_v3'
+fb_merged <- RenameIdents(object = fb_merged, "ExN1" = "ImmN")
+fb_merged <- RenameIdents(object = fb_merged, "ExN0" = "ExN")
+DimPlot_scCustom(fb_merged)
+saveRDS(fb_merged, file = "fb_merged.RDS")
+levels(fb_merged)
+```
+```{r}
+current_levels <- levels(Idents(fb_merged))
+sorted_levels <- sort(current_levels)
+Idents(fb_merged) <- factor(Idents(fb_merged), levels = sorted_levels)
+fb_merged$cell_type_v3 <- Idents(fb_merged)
+saveRDS(fb_merged, file = "fb_merged.RDS")
+
+```
+
+
+
+```{r}
+metadata_df <- fb_merged@meta.data
+
+average_mt_per_cell_type_dplyr <- metadata_df %>%
+  group_by(cell_type_v3) %>%  
+  summarise(mean_percent_mt = mean(percent.mt, na.rm = TRUE))
+print(average_mt_per_cell_type_dplyr)
+
+
+average_mt_per_sample <- aggregate(fb_merged@meta.data$percent.mt, 
+                                   by = list(sample = fb_merged@meta.data$cell_type_v3), 
+                                   FUN = mean)
+
+print(average_mt_per_sample)
+
+
+
+
+
+ggplot(fb_merged@meta.data, aes(x = percent.mt, color = orig.ident, fill = cell_type_v3)) +
+  geom_density(alpha = 0.2) + # Add density plots with transparency
+  theme_classic() +
+  labs(title = "Mitochondrial DNA Percentage Distribution", x = "Percent Mitochondrial", y = "Density") +
+  scale_x_log10() # Use log scale if beneficial for the data distribution
+
+
+VlnPlot(object = fb_merged, 
+        features = "percent.mt", 
+        group.by = "cell_type_v3", # Replace with your cell type metadata column name
+        pt.size = 0) +          # Set point size to 0 to remove individual dots
+  geom_boxplot(width = 0.1, fill = "white") + # Add box plots on top
+  labs(title = "Mitochondrial DNA Percentage per Cell Type", y = "Percent Mitochondrial")
+```
+```{r}
+cluster_to_subset <- "ImmN" 
+subset_object <- subset(fb_merged, idents = cluster_to_subset)
+DimPlot_scCustom(subset_object)
+gradient <- c("blue", "white", "red")
+DotPlot_scCustom(subset_object, features = c("SATB2", "CUX1", "CUX2", "GRIA2", "GRIN2B", "SLC17A7", "CAMK2A", "NRGN"), colors_use = gradient, x_lab_rotate = TRUE)
+
+
+
+
+```
+```{r}
+
+```
+
