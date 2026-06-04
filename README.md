@@ -33,7 +33,7 @@ Single-cell RNA-seq atlas of the fetal macaque subventricular zone (SVZ) at late
 | `plot_umap_clusters.R` | Wrapper around `DimPlot_scCustom` + ggrepel. Generates labeled UMAP cluster plots with shadow text at cluster centroids. |
 | `plot_umap_genes.R` | Overlays multi-gene expression on a UMAP, expressing cells plotted over a grey background, each gene a distinct color. |
 | `plot_harmony_integration.R` | Publication-ready Harmony QC figure: PCA/UMAP pre- and post-correction colored by sample and gestational age, plus iLISI violin plots computed in pure R (no external package). |
-| `fet_brain_tkim.R` | Publication-ready lineage subset dot plots |
+| `fet_brain_tkim.R` | Publication-ready lineage subset dot plots. |
 
 ### Python
 
@@ -61,3 +61,4 @@ Single-cell RNA-seq atlas of the fetal macaque subventricular zone (SVZ) at late
 3. Export per-subset metadata CSVs using `save_subset_for_scvelo()`, then run `run_scvelo_brain_full_3.py` and `run_scvelo_brain_subsets_5.py`.
 4. Run `run_cellrank_brain_5.py` using the h5ad checkpoints from step 3.
 5. Generate QC tables with `make_qc_tables.R` and integration figures with `plot_harmony_integration.R`.
+6. Run `fet_brain_tkim.R` to generate subset dot plots.
