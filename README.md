@@ -31,8 +31,9 @@ Single-cell RNA-seq atlas of the fetal macaque subventricular zone (SVZ) at late
 | `make_qc_tables.R` | Regenerates QC summary tables from raw Cell Ranger output + the final Seurat object: pipeline cell counts per sample and cell-type composition of the final atlas. |
 | `atlas_palette.R` | Shared color palette (`ATLAS_PALETTE`, `SUBSET_PALETTE`). Defines `get_atlas_colors()` and `get_subset_colors()` helpers. Identical colors are used in all R and Python figures. |
 | `plot_umap_clusters.R` | Wrapper around `DimPlot_scCustom` + ggrepel. Generates labeled UMAP cluster plots with shadow text at cluster centroids. |
-| `plot_umap_genes.R` | Overlays multi-gene expression on a UMAP — expressing cells plotted over a grey background, each gene a distinct color. |
+| `plot_umap_genes.R` | Overlays multi-gene expression on a UMAP, expressing cells plotted over a grey background, each gene a distinct color. |
 | `plot_harmony_integration.R` | Publication-ready Harmony QC figure: PCA/UMAP pre- and post-correction colored by sample and gestational age, plus iLISI violin plots computed in pure R (no external package). |
+| `fet_brain_tkim.R` | Publication-ready lineage subset dot plots |
 
 ### Python
 
@@ -45,7 +46,7 @@ Single-cell RNA-seq atlas of the fetal macaque subventricular zone (SVZ) at late
 
 ## Data
 
-`fb_seurat_FINAL_v2.RDS` — Final annotated Seurat object (v8 cell type labels in `cell_type_v8`).
+`fb_seurat_FINAL_v2.RDS` Final annotated Seurat object (v8 cell type labels in `cell_type_v8`).
 
 ## Dependencies
 
