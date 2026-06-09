@@ -1,0 +1,417 @@
+---
+title: "Fetal_Brain_Atlas_Dotplots"
+output: pdf_document
+date: "2026-06-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(Seurat)
+library(scCustomize)
+library(readxl)
+library(tibble)
+library(Matrix)
+library(harmony)
+library(pheatmap)
+library(anndata)
+library(ggh4x)
+```
+
+```{r basic-setting}
+setwd("/gscratch/kawaldorflab/tykim/R_files/fetal_brain")
+set.seed(42)
+
+gradient <- c("blue", "white", "red")
+```
+
+```{r Read-Seurat-Object}
+fb <- readRDS("/mmfs1/gscratch/kawaldorflab/jcorn427/fet_brain/fb_v4/fb_seurat_FINAL_v2.RDS")
+fb <- NormalizeData(fb, assay = "RNA")
+DefaultAssay(fb) <- "RNA"
+
+head(fb)
+unique(fb$cell_type_v8)
+```
+
+```{r}
+nl_dot <- DotPlot_scCustom(fb,
+                            features = c("SLC17A7", "CAMK2A", "NRGN", "DCX", "NEUROD1", "EOMES", "TBR1", "SOX5", 
+                                         "POU3F2", "NR2F1", "SLC17A6", "NEUROD2", "SATB2", 
+                                         "UNC5D", "GRIA2", "CUX1", "CUX2", "GRIN2B","GAD1", 
+                                         "GAD2", "DLX1", "DLX5", "DLX6", "MBIP", "ZSWIM5", "PROX1",
+                                         "NKX2-1", "LHX6",
+                                         "SOX6",  "CALB2", "ST18", "HTR3A", "NRSN1", 
+                                         "POU2F2", "RELN" ,"VIP", "CCK", "SST", 
+                                         "NPY", "PVALB"), 
+                             group.by = "cell_type_v8", remove_axis_titles = FALSE,  
+                            flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Gene", y = "Cluster")
+
+nl_dot_filtered <- nl_dot +
+  scale_y_discrete(limits = c( "ImmN","IPC", "ExN", "CGE", "MGE", "MGE-IN"))  +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
+nl_dot_filtered
+
+ggsave("Neuronal_Lineages_Dot.pdf", width = 8, height = 10)
+```
+
+```{r}
+oligo_plot <- DotPlot_scCustom(fb, 
+                               features = c("MKI67",
+                                            "SOX10", "PDGFRA", "OLIG2", "PCDH17", "PCDH15", 
+                                            "MMP16", "CA10", "ENSMMUG00000056728", 
+                                            "BCAS1", "ENPP6", 
+                                             "MOG", "PLP1", "MBP","MAL"
+                                            ), 
+                               group.by = "cell_type_v8", remove_axis_titles = FALSE,  
+                               flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Gene", y = "Cluster")
+
+oligo_plot_filtered <- oligo_plot + 
+  scale_y_discrete(limits = c("pre-OPC", "OPC", "COP1", "OL1", "COP2", "OL2"))  +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
+oligo_plot_filtered
+
+ggsave("Oligodendrocyte_Dot.pdf", width = 8, height = 10)
+```
+
+```{r}
+astro_dot <- DotPlot_scCustom(fb, 
+                            features = c("VIM", "S100A6", "HIF1A","MT2A",  "EGFR", "ASCL1", "DLL1", "CDK6", "S100B", "CXCL14",
+                                         "MT3","FABP7", "GLUL" , "MFGE8", 
+                                          "HOPX",  "MT3A",
+                                          "FAM107A", "AQP4", "TNC",
+                                         "APOE", "TIMP3", 
+                                         "SPARCL1", "SLC1A3", "SLC1A2", "GFAP",
+                                          "GLAST", "ID3"
+                                         
+                                         ), 
+                            group.by = "cell_type_v7", remove_axis_titles = FALSE,  
+                            flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Gene", y = "Cluster")
+
+astro_dot_filtered <- astro_dot +
+  scale_y_discrete(limits = c("APC", "oRG-G", "AS0", "AS1", "AS2"))  +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
+astro_dot_filtered
+
+ggsave("Astro_Dot.pdf", width = 8, height = 10)
+```
+
+```{r}
+mg_dot <- DotPlot_scCustom(fb, 
+                           features = c("CD14", "CD68", 
+                                         "AIF1", "CSF1R", "IL1B", 
+                                         "TREM2", "LYZ", "P2RY12", "CX3CR1", "SALL1", "CD80", "CD86", 
+                                        "MRC1", "LYVE1", "CD163", "CLEC12A"
+                                        ), 
+                            group.by = "cell_type_v7", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Gene", y = "Cluster")
+
+mg_dot_filtered <- mg_dot +
+  scale_y_discrete(limits = c("MG0", "MG1", "BAM"))  +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
+mg_dot_filtered
+
+ggsave("Microglia_Dot.pdf", width = 8, height = 10)
+```
+
+```{r}
+misc_dot <- DotPlot_scCustom(fb, 
+                            features = c("RPL37A", "RPL32", "RPS24", "RPS2", "RPL23A",
+                                         "GREM1", "ENSMMUG00000012525", "HMGA2", "FN1", "COL1A2",  "VIM", "DCN", "FMOD", "PDGFRB", 
+                                         "MYOF", "TAGLN", "ABCC9", "PECAM1", "VWF", 
+                                         "CD34", "FLT1", "SOX2", "CD133", "CCDC153", 
+                                         "TTR", "CLDN3", "CLDN4", 
+                                         "FOLR1", "KL", "CLIC6", "AQP1", 
+                                         "FOXJ1", "RFX2", 
+                                         "RFX3", "DNALI1", "TUBA4B", "CETN2", "AQP4"
+                                        
+                                         ), 
+                            group.by = "cell_type_v8", remove_axis_titles = FALSE,  
+                            flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Gene", y = "Cluster")
+
+misc_dot_filtered <- misc_dot +
+  scale_y_discrete(limits = c("UP/I", "MPC", "FIB", "PC", "EC", "ChP", "Ep"))  +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))
+misc_dot_filtered
+
+ggsave("Misc_Dot.pdf", width = 8, height = 12)
+```
+
+```{r Jev}
+spacing_unit <- 0.7
+exp_limits <- c(-2.5, 2.5)  
+pct_max <- 100 
+
+JEV <- DotPlot_scCustom(fb,
+                        features = c(
+                                     "HSPA5", "TFRC", "ENSMMUG00000060369", "CD209", "CLEC5A",
+                                     "HSPA4", "DRD2", "PLVAP"
+                                     ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Japanese Encephalitis Virus", y = "Cluster")
+
+JEV_filtered <- JEV+
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  scale_x_discrete(labels = c("ENSMMUG00000060369" = "HAVCR1")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(8 * spacing_unit, "cm"))
+JEV_filtered
+
+ggsave("JEV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+TBEV <- DotPlot_scCustom(fb,
+                        features = c("LRP8" 
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Tick-Borne Encephalitis Virus", y = "Cluster")
+
+TBEV_filtered <- TBEV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1))+ 
+  force_panelsizes(rows = unit(1 * spacing_unit, "cm"))
+TBEV_filtered
+
+ggsave("TBEV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+WNV <- DotPlot_scCustom(fb,
+                         features = c( 
+                                      "TIMD4", "ENSMMUG00000060369", "MERTK","TYRO3", "AXL", "ITGB3","ITGAV", 
+                                      "TLR3", "MRC1","CD209"
+                         ), 
+                         group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "West Nile Virus", y = "Cluster")
+
+WNV_filtered <- WNV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  scale_x_discrete(labels = c("ENSMMUG00000060369" = "HAVCR1")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(10 * spacing_unit, "cm"))
+WNV_filtered
+
+ggsave("WNV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+ZIKV <- DotPlot_scCustom(fb,
+                        features = c(  
+                                     
+                                     "ENSMMUG00000060369", "MERTK", "TYRO3", "AXL", "CD209"
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Zika Virus", y = "Cluster")
+
+ZIKV_filtered <- ZIKV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  scale_x_discrete(labels = c("ENSMMUG00000060369" = "HAVCR1")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(5 * spacing_unit, "cm"))
+ZIKV_filtered
+
+ggsave("ZIKV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+VZV <- DotPlot_scCustom(fb,
+                         features = c( 
+                                      "IGF2R", "IDE", "M6PR", "NECTIN1"
+                         ), 
+                         group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Varicella Zoster Virus", y = "Cluster")
+
+VZV_filtered <- VZV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(4 * spacing_unit, "cm"))
+VZV_filtered
+
+ggsave("VZV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+HSV <- DotPlot_scCustom(fb,
+                        features = c(
+                                     "HS3ST6", "HS3ST5", "HS3ST4", "HS3ST2", "HS3ST1", "PILRA", 
+                                     "TNFRSF14", "NECTIN2",  "NECTIN1"
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Herpes Simplex Virus-1 and 2", y = "Cluster")
+
+HSV_filtered <- HSV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(9 * spacing_unit, "cm"))
+HSV_filtered
+
+ggsave("HSV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+CMV <- DotPlot_scCustom(fb,
+                        features = c(  
+                                     "ITGB3", "ITGB1", "ITGAV", "TGFBR3", "OR14I1", "NRP2", "ANXA2", "EGFR", "PDGFRA"
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Cytomegalovirus", y = "Cluster")
+
+CMV_filtered <- CMV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(9 * spacing_unit, "cm"))
+CMV_filtered
+ggsave("CMV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+CHIKV <- DotPlot_scCustom(fb,
+                        features = c( 
+                                     "ENSMMUG00000060369", "AXL","MXRA8"
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Chikungunya Virus", y = "Cluster")
+
+CHIKV_filtered <- CHIKV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  scale_x_discrete(labels = c("ENSMMUG00000060369" = "HAVCR1")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(3 * spacing_unit, "cm"))
+CHIKV_filtered
+
+ggsave("CHIKV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+Coxsackievirus <- DotPlot_scCustom(fb,
+                          features = c(  
+                                        
+                                       "SCARB2", "KREMEN1", "CD55", "CXADR"
+                          ), 
+                          group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Coxsackievirus", y = "Cluster")
+
+Coxsackievirus_filtered <- Coxsackievirus +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  theme(axis.text.y = element_text(margin = margin(t = 15, b = 5))) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(4 * spacing_unit, "cm"))
+Coxsackievirus_filtered
+
+ggsave("Coxsackievirus_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+HIV <- DotPlot_scCustom(fb,
+                                   features = c(  
+                                                "CXCR4", "CCR5", "CD4"
+                                   ), 
+                                   group.by = "cell_type_v7", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Human Immunodeficiency Virus", y = "Cluster")
+
+HIV_filtered <- HIV +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) +
+  guides(
+    size = guide_legend(title = "Percent expressed", order = 2),
+    color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)
+  ) + 
+  force_panelsizes(rows = unit(3 * spacing_unit, "cm"))
+HIV_filtered
+ggsave("HIV_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+Nipah <- DotPlot_scCustom(fb,
+                        features = c("EFNB3", "EFNB2"   
+                        ), 
+                        group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Nipah Virus", y = "Cluster")
+
+Nipah_filtered <- Nipah +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+         color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) + 
+  force_panelsizes(rows = unit(2 * spacing_unit, "cm"))
+Nipah_filtered
+
+ggsave("Nipah_Dot.pdf", width = 10, height = 4)
+```
+
+```{r}
+SARS <- DotPlot_scCustom(fb,
+                          features = c(     
+                                       "FURIN", "NRP1", "CD209", "CTSB", "CTSL", "VIM", "TMPRSS2", "ACE2"
+                          ), 
+                          group.by = "cell_type_v8", remove_axis_titles = FALSE,  flip_axes = TRUE, x_lab_rotate = TRUE, colors_use = gradient) + 
+  labs(x = "Severe Acute Respiratory Syndrome-related Coronavirus", y = "Cluster")
+
+SARS_filtered <- SARS +
+  scale_color_gradientn(colors = gradient, limits = exp_limits) + 
+  scale_radius(range = c(0, 6), limits = c(0, 100),      
+               breaks = c(0, 25, 50, 75), 
+               labels = c("0", "25", "50", "75")) + 
+  guides(size = guide_legend(title = "Percent expressed", order = 2),
+                               color = guide_colorbar(title = "Avg. Expression (scaled)", order = 1)) +
+  force_panelsizes(rows = unit(8* spacing_unit, "cm"))
+SARS_filtered
+ggsave("SARS_Dot.pdf", width = 10, height = 8)
+```
+
