@@ -33,7 +33,7 @@ Single-cell RNA-seq atlas of the fetal macaque subventricular zone (SVZ) at late
 | `plot_umap_clusters.R` | Wrapper around `DimPlot_scCustom` + ggrepel. Generates labeled UMAP cluster plots with shadow text at cluster centroids. |
 | `plot_umap_genes.R` | Overlays multi-gene expression on a UMAP, expressing cells plotted over a grey background, each gene a distinct color. |
 | `plot_harmony_integration.R` | Publication-ready Harmony QC figure: PCA/UMAP pre- and post-correction colored by sample and gestational age, plus iLISI violin plots computed in pure R (no external package). |
-| `fet_brain_tkim.R` | Publication-ready lineage subset dot plots. |
+| `fet_brain_tkim.Rmd` | Publication-ready lineage subset dot plots. |
 
 ### Python
 
